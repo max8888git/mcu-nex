@@ -11,6 +11,7 @@
         'book' => '<path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v17H6.5A2.5 2.5 0 0 0 4 21.5z" /><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />',
         'inbox' => '<path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.5 5h13l3.5 7v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z" />',
         'user-cog' => '<circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 10-5.5" /><circle cx="18" cy="17" r="2.5" /><path d="M18 12.5v2M18 19.5v2M13.5 17h2M20.5 17h2" />',
+        'check' => '<circle cx="12" cy="12" r="9" /><path d="m8 12.5 2.5 2.5L16 9.5" />',
         'history' => '<path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5M12 7v5l3 2" />',
         'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />',
         'menu' => '<path d="M4 6h16M4 12h16M4 18h16" />',

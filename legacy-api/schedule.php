@@ -18,13 +18,27 @@ if ($method === 'GET') {
     if (trim((string) ($_GET['home'] ?? '')) === 'vpaa') {
       json_ok(vpaa_home_status($pdo));
     }
+    // the VPAA's boxes: one college's timetable waiting or approved, and the history of approved terms
+    if (!empty($_GET['college_copy'])) {
+      json_ok(college_copy_for_review($pdo, ['college' => $_GET['college'] ?? '', 'which' => $_GET['which'] ?? '', 'term' => $_GET['term'] ?? 0]));
+    }
+    if (!empty($_GET['vpaa_history'])) {
+      json_ok(vpaa_history($pdo));
+    }
     // the college's own VPAA-approved timetable (schedule-colleges.php)
     if (!empty($_GET['college_final'])) {
-      json_ok(college_final_for_viewer($pdo, ['term' => $_GET['term'] ?? 0]));
+      json_ok(college_final_for_viewer($pdo, ['term' => $_GET['term'] ?? 0, 'scope' => $_GET['scope'] ?? 'current']));
     }
     // per-college approval status (schedule-colleges.php)
     if (!empty($_GET['colleges'])) {
-      json_ok(college_status_overview($pdo, ['year' => $_GET['year'] ?? '', 'sem' => $_GET['sem'] ?? '1']));
+      $year = trim((string) ($_GET['year'] ?? ''));
+      $sem = (string) ($_GET['sem'] ?? '1');
+      // no term given (the VPAA's boxes): the current offering
+      if ($year === '' && ($current = current_offering_term($pdo))) {
+        $year = $current['schoolYear'];
+        $sem = $current['termCode'];
+      }
+      json_ok(college_status_overview($pdo, ['year' => $year, 'sem' => $sem]));
     }
     $year = trim((string) ($_GET['year'] ?? ''));
     $sem = normalize_term_code((string) ($_GET['sem'] ?? '1'));
@@ -998,6 +1012,12 @@ function build_schedule_jobs(PDO $pdo, int $termId, string $sem, array $body): a
     $sql .= ' AND s.year_level = ?';
     $params[] = $yearLevel;
   }
+  // colleges away from the Working timetable (with someone else, or approved) aren't scheduled here
+  $skip = array_values(array_filter(array_map('intval', (array) ($body['skipCollegeIds'] ?? []))));
+  if ($skip) {
+    $sql .= ' AND p.college_id NOT IN (' . implode(',', array_fill(0, count($skip), '?')) . ')';
+    array_push($params, ...$skip);
+  }
   $stmt = $pdo->prepare($sql);
   $stmt->execute($params);
   $sections = $stmt->fetchAll();
@@ -1773,7 +1793,7 @@ function classes_from_placed_groups(PDO $pdo, int $termId, array $placed): array
   $secMeta = [];
   if (schema_table_exists($pdo, 'sections')) {
     $stmt = $pdo->prepare(
-      'SELECT s.section_id, s.year_level, s.student_count, s.is_retake,
+      'SELECT s.section_id, s.curriculum_id, s.year_level, s.student_count, s.is_retake,
               p.program_id, p.program_name, p.represents_college, p.college_id, c.college_name
        FROM sections s
        JOIN programs p ON p.program_id = s.program_id
@@ -1842,6 +1862,8 @@ function classes_from_placed_groups(PDO $pdo, int $termId, array $placed): array
       $classes[] = [
         'id' => $offId,
         'sectionId' => public_id('s', $sid),
+        // which curriculum the section follows (Reports → Finished curriculums)
+        'curriculumId' => !empty($meta['curriculum_id']) ? public_id('cur', (int) $meta['curriculum_id']) : null,
         'sectionName' => $m['sectionName'] ?? '',
         'collegeId' => public_id('c', (int) ($m['collegeId'] ?? $meta['college_id'] ?? 0)),
         'collegeName' => $m['collegeName'] ?? (string) ($meta['college_name'] ?? ''),
@@ -2783,7 +2805,7 @@ function list_scheduled_classes(PDO $pdo, int $termId): array
   $sql = "SELECT o.offering_id, o.section_id, o.component, o.hours_per_week, o.status, {$notesCol},
                  o.curriculum_course_id, cc.course_id, cc.course_title,
                  cc.lecture_room_type, cc.lab_room_type, cc.lecture_units, cc.lab_units,
-                 s.section_code, s.year_level, s.student_count, s.is_retake,
+                 s.section_code, s.year_level, s.student_count, s.is_retake, s.curriculum_id,
                  p.program_name, p.represents_college, p.college_id, p.program_id, col.college_name,
                  m.meeting_id, m.day_of_week, m.start_time, m.end_time,
                  COALESCE(m.room_id, mc.room_id) AS room_id,
@@ -2815,6 +2837,7 @@ function list_scheduled_classes(PDO $pdo, int $termId): array
       $byOff[$oid] = [
         'id' => public_id('off', $oid),
         'sectionId' => public_id('s', (int) $row['section_id']),
+        'curriculumId' => !empty($row['curriculum_id']) ? public_id('cur', (int) $row['curriculum_id']) : null,
         'sectionName' => $prog . ' ' . (int) $row['year_level'] . '-' . $row['section_code'],
         'collegeId' => public_id('c', (int) $row['college_id']),
         'collegeName' => $row['college_name'],

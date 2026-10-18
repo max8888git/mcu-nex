@@ -25,7 +25,7 @@
   var listeners = [];
 
   function emptyData() {
-    return { active: [], archivedColleges: [], archivedDeptOnly: [] };
+    return { active: [], archivedColleges: [], archivedDeptOnly: [], archivedPrograms: [] };
   }
 
   /**
@@ -86,6 +86,7 @@
       if (!parsed || !Array.isArray(parsed.active)) return null;
       if (!Array.isArray(parsed.archivedColleges)) parsed.archivedColleges = [];
       if (!Array.isArray(parsed.archivedDeptOnly)) parsed.archivedDeptOnly = [];
+      if (!Array.isArray(parsed.archivedPrograms)) parsed.archivedPrograms = [];
       return parsed;
     } catch (e) {
       return null;
@@ -121,6 +122,7 @@
     data.active = Array.isArray(doc.active) ? doc.active : [];
     data.archivedColleges = Array.isArray(doc.archivedColleges) ? doc.archivedColleges : [];
     data.archivedDeptOnly = Array.isArray(doc.archivedDeptOnly) ? doc.archivedDeptOnly : [];
+    data.archivedPrograms = Array.isArray(doc.archivedPrograms) ? doc.archivedPrograms : [];
   }
 
   var useApi = false;

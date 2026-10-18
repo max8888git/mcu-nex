@@ -53,7 +53,36 @@ class CollegeApprovalTest extends TestCase
         foreach (DB::table('users')->where('is_active', 1)->orderBy('user_id')->get(['user_id', 'role']) as $u) {
             $this->users[$u->role] ??= (int) $u->user_id;
         }
+        $this->resetApprovalBaseline();
         $this->placeUnscheduledFromSavedCopies();
+    }
+
+    // the copy is taken from live data, where people keep sending and deciding timetables;
+    // start every run from the same point: every college in the Records Officer's latest
+    // saved timetable (one set that was scheduled together) waiting for the University
+    // Registrar, the rest not started, no notifications
+    private function resetApprovalBaseline(): void
+    {
+        // load the legacy API the way the app does (json_ok must answer, not exit)
+        if (! defined('REGISTRAR_LIBRARY')) {
+            define('REGISTRAR_LIBRARY', true);
+        }
+        (new \ReflectionMethod(\App\Services\DomainCatalog::class, 'load'))->invoke(null);
+        $termId = (int) DB::table('terms as t')->join('school_years as y', 'y.school_year_id', '=', 't.school_year_id')
+            ->where('y.label', self::YEAR)->where('t.term_code', self::TERM)->value('t.term_id');
+        $saved = DB::table('schedule_copies')->where('term_id', $termId)->where('kind', 'save')->orderByDesc('updated_at')->value('payload');
+        $this->assertNotNull($saved, 'The test needs a saved timetable for '.self::YEAR.' term '.self::TERM.'.');
+        $snap = decode_snapshot($saved);
+        foreach (DB::table('term_college_approvals')->where('term_id', $termId)->get() as $r) {
+            $sent = encode_snapshot(snapshot_for_college($snap, (int) $r->college_id));
+            DB::table('term_college_approvals')->where('term_id', $termId)->where('college_id', $r->college_id)->update($sent ? [
+                'status' => 'pending_super_admin', 'sa_json' => $sent, 'sa_at' => now(), 'vpaa_json' => null, 'vpaa_at' => null,
+                'is_locked' => 1, 'unlock_note' => null, 'unlocked_at' => null,
+                'last_reject_from' => null, 'last_reject_note' => null, 'last_reject_at' => null,
+            ] : ['status' => 'draft', 'sa_json' => null, 'vpaa_json' => null, 'last_reject_from' => null, 'last_reject_note' => null, 'last_reject_at' => null]);
+        }
+        term_from_college_rows(db(), $termId);
+        DB::table('user_notifications')->delete();
     }
 
     // the copy is taken from live data, where someone may have just unplaced a class;
@@ -243,6 +272,91 @@ class CollegeApprovalTest extends TestCase
         $this->assertSame('with_registrar', $this->colleges()[$cas]['status']);
     }
 
+    public function test_vpaa_checks_a_college_in_its_box_approves_and_can_retract_with_a_note(): void
+    {
+        $cas = 'c-2';
+        $pharmacy = 'c-3';
+        $this->as('super_admin');
+        $this->act('college_registrar_decide', ['colleges' => [$cas, $pharmacy], 'accept' => true])->assertOk();
+        $this->act('college_send_to_vpaa', ['colleges' => [$cas, $pharmacy]])->assertOk();
+
+        // the box opens the college's waiting copy, by program
+        $this->as('vpaa');
+        $this->legacyRequest('GET', ['college_copy' => '1', 'college' => $cas, 'which' => 'pending']);
+        $copy = $this->getJson('/api/schedule.php?college_copy=1&college='.$cas.'&which=pending')->assertOk()->json();
+        $this->assertSame('pending_vpaa', $copy['status']);
+        $this->assertNotEmpty($copy['classes']);
+        $this->assertNotEmpty($copy['programs']);
+        $this->assertSame(['c-2'], array_values(array_unique(array_column($copy['classes'], 'collegeId'))));
+        // the overview works without a term (the current offering)
+        $this->legacyRequest('GET', ['colleges' => '1']);
+        $this->getJson('/api/schedule.php?colleges=1')->assertOk()->assertJsonPath('term.schoolYear', self::YEAR);
+
+        $this->act('college_vpaa_decide', ['colleges' => [$cas, $pharmacy], 'accept' => true])->assertOk();
+
+        // History lists the term with both colleges
+        $this->legacyRequest('GET', ['vpaa_history' => '1']);
+        $terms = $this->getJson('/api/schedule.php?vpaa_history=1')->assertOk()->json('terms');
+        $this->assertSame([$cas, $pharmacy], array_column($terms[0]['colleges'], 'id'));
+
+        // retracting needs a note; it goes back to the Registrar and the approved copy stays in use
+        $this->act('college_vpaa_retract', ['colleges' => [$pharmacy]])
+            ->assertStatus(400)->assertJson(['error' => 'Say why you’re retracting it and what the University Registrar should fix.']);
+        $this->act('college_vpaa_retract', ['colleges' => [$pharmacy], 'note' => 'PCH 111 lab is in the wrong building.'])->assertOk();
+        $now = $this->colleges()[$pharmacy];
+        $this->assertSame('with_registrar', $now['status']);
+        $this->assertSame('vpaa', $now['lastRejectFrom']);
+        $this->assertTrue($now['hasPublished']);
+        $this->assertFalse($now['locked']);
+        $this->assertSame(1, DB::table('user_notifications')->where('user_id', $this->users['super_admin'])->where('title', 'The VPAA retracted an approval')->count());
+        $this->assertSame(1, DB::table('transaction_logs')->where('summary', 'like', 'Retracted the approval of %wrong building.%')->count());
+        // only an approved one can be retracted
+        $this->act('college_vpaa_retract', ['colleges' => [$pharmacy], 'note' => 'Again.'])->assertStatus(400);
+
+        // nobody but the VPAA and the registrars opens these
+        $this->as('dean');
+        $this->legacyRequest('GET', ['college_copy' => '1', 'college' => $cas, 'which' => 'published']);
+        $this->getJson('/api/schedule.php?college_copy=1&college='.$cas.'&which=published')->assertStatus(400);
+    }
+
+    public function test_a_sent_college_leaves_the_working_timetable_and_comes_back_with_the_note(): void
+    {
+        $cas = 'c-2';
+        $in = fn (string $slot) => (bool) array_filter($this->workspaceClasses($slot), fn ($c) => $c['collegeId'] === $cas);
+        $saves = fn (string $owner, string $like) => DB::table('schedule_copies')->where('kind', 'save')->where('owner_role', $owner)->where('title', 'like', $like)->count();
+
+        // the Registrar approves the Records Officer's copy into their Working timetable, then sends it on
+        $this->as('super_admin');
+        $this->act('college_registrar_decide', ['colleges' => [$cas], 'accept' => true])->assertOk();
+        $this->assertTrue($in('sa_private'));
+        $this->act('college_send_to_vpaa', ['colleges' => [$cas]])->assertOk();
+        $this->assertFalse($in('sa_private'), 'sent: out of the Working timetable');
+        $this->assertSame(1, $saves('super_admin', 'College Of Arts and Science – sent to the VPAA, %'), 'a copy is kept in the saves');
+
+        // the VPAA sends it back: into the Registrar's Working timetable, with the note
+        $this->as('vpaa');
+        $this->act('college_vpaa_decide', ['colleges' => [$cas], 'accept' => false, 'note' => 'Move STS 000 to the morning.'])->assertOk();
+        $this->as('super_admin');
+        $this->assertTrue($in('sa_private'), 'back in the Working timetable');
+        $now = $this->colleges()[$cas];
+        $this->assertSame(['with_registrar', 'vpaa', 'Move STS 000 to the morning.'], [$now['status'], $now['lastRejectFrom'], $now['lastRejectNote']]);
+
+        // the Registrar sends it back to the Records Officer: out of theirs, into the Records Officer's
+        $this->act('college_registrar_decide', ['colleges' => [$cas], 'accept' => false, 'note' => 'Please redo the CS labs.'])->assertOk();
+        $this->assertFalse($in('sa_private'));
+        $this->assertTrue($in('admin_private'));
+        $this->as('admin');
+        $now = $this->colleges()[$cas];
+        $this->assertSame(['draft', 'super_admin', 'Please redo the CS labs.'], [$now['status'], $now['lastRejectFrom'], $now['lastRejectNote']]);
+
+        // the Records Officer sends it again (out of theirs, copy kept), then takes it back (in again)
+        $this->act('college_submit_to_registrar', ['colleges' => [$cas]])->assertOk();
+        $this->assertFalse($in('admin_private'));
+        $this->assertSame(1, $saves('admin', 'College Of Arts and Science – sent to the University Registrar, %'));
+        $this->act('college_retract', ['colleges' => [$cas]])->assertOk();
+        $this->assertTrue($in('admin_private'));
+    }
+
     public function test_registrar_can_send_their_own_version_while_a_request_waits(): void
     {
         $pharmacy = 'c-3';
@@ -374,6 +488,13 @@ class CollegeApprovalTest extends TestCase
         $this->assertNotNull($mine['publishedAt']);
         $this->assertNotEmpty($mine['classes']);
         $this->assertSame(['c-2'], array_values(array_unique(array_column($mine['classes'], 'collegeId'))));
+        $this->assertCount(1, $mine['terms'], 'the Dashboard shows the current term only');
+        // Past timetables leaves the current term out (it moves there when the term changes)
+        $this->legacyRequest('GET', ['college_final' => '1', 'scope' => 'past']);
+        $past = $this->getJson('/api/schedule.php?college_final=1&scope=past')->assertOk()->json();
+        $this->assertNull($past['term']);
+        $this->assertSame([], $past['classes']);
+        $this->legacyRequest('GET', ['college_final' => '1']);
         // the Program Chair gets their own programs' classes only
         $this->as('program_chair');
         $chair = $this->getJson('/api/schedule.php?college_final=1')->assertOk()->json();
@@ -397,19 +518,25 @@ class CollegeApprovalTest extends TestCase
         $this->assertFalse($now[$cas]['locked']);
         $this->assertContains($cas, $this->collegesIn($this->termRow()->published_json));
         $this->assertSame(1, DB::table('transaction_logs')->where('summary', 'like', 'Unlocked %Wrong room for STS 000.%')->count());
+        // unlocking puts the approved copy into the Registrar's Working timetable to fix; locking again takes it out
+        $this->assertNotEmpty(array_filter($this->workspaceClasses('sa_private'), fn ($c) => $c['collegeId'] === $cas));
         $this->act('college_relock', ['colleges' => [$cas]])->assertOk();
         $this->assertTrue($this->colleges()[$cas]['locked']);
+        $this->assertEmpty(array_filter($this->workspaceClasses('sa_private'), fn ($c) => $c['collegeId'] === $cas), 'an approved college is not in the Working timetable');
 
-        // Generate with CAS locked and Pharmacy unlocked: CAS's published classes are kept
-        // (handed to the generator as already-placed classes it schedules around);
-        // this database has no sections, so the generator itself can't run here
+        // Generate with CAS approved and Pharmacy unlocked: CAS is away from the Working timetable, so its
+        // sections aren't scheduled and its approved classes only block their rooms (handed to the generator
+        // as already-placed classes it schedules around); this database has no sections, so the generator
+        // itself can't run here
         $this->act('college_unlock', ['colleges' => [$pharmacy], 'note' => 'Regenerate Pharmacy rooms.'])->assertOk();
+        $this->assertNotEmpty(array_filter($this->workspaceClasses('sa_private'), fn ($c) => $c['collegeId'] === $pharmacy), 'unlocked: back in the Working timetable');
         $termId = (int) $this->termRow()->term_id;
-        $body = ['action' => 'generate'];
+        $body = ['action' => 'generate', 'actor' => 'super_admin'];
         apply_college_locks_to_generate(db(), $termId, $body);
         $this->assertTrue($body['onlyUnscheduled']);
         $seedColleges = array_values(array_unique(array_map(fn ($c) => $c['collegeId'], $body['seedPrivateClasses'])));
-        $this->assertSame([$cas], $seedColleges, 'only the locked college is kept');
+        $this->assertSame([$cas], $seedColleges, 'only the away college blocks rooms');
+        $this->assertSame([2], $body['skipCollegeIds'], 'and its sections are skipped');
         $published = [];
         foreach (json_decode($this->termRow()->published_json, true)['classes'] as $c) {
             if ($c['collegeId'] === $cas) {
@@ -420,16 +547,11 @@ class CollegeApprovalTest extends TestCase
         foreach ($body['seedPrivateClasses'] as $c) {
             $seeded[$c['id']] = $c['meetings'];
         }
-        $this->assertEquals($published, $seeded, 'kept exactly as published');
-        $casClasses = array_values(array_filter($this->workspaceClasses('sa_private'), fn ($c) => $c['collegeId'] === $cas));
-        $this->assertNotEmpty($casClasses);
-
-        // editing a locked college's class is refused (moved to a slot where its room
-        // and section are free, so only the lock can stop it)
-        [$meeting, $day, $start, $end] = $this->freeSlotFor($casClasses[0], $this->workspaceClasses('sa_private'));
-        $this->act('move_meeting', ['actor' => 'super_admin', 'workspace' => 'mine', 'page' => 'create',
-            'meetingId' => $meeting['id'], 'day' => $day, 'start' => $start, 'end' => $end, 'roomId' => $meeting['roomId']])
-            ->assertStatus(400)->assertJsonPath('error', 'College Of Arts and Science is published and locked. The University Registrar can unlock it to fix a mistake.');
+        $this->assertEquals($published, $seeded, 'its rooms are blocked exactly as approved');
+        // for the Records Officer, a college with the Registrar is away too
+        $ro = ['action' => 'generate', 'actor' => 'admin'];
+        apply_college_locks_to_generate(db(), $termId, $ro);
+        $this->assertEqualsCanonicalizing([2, 3], $ro['skipCollegeIds']);
 
         // sending a locked college again is refused until it's unlocked
         $this->act('college_send_to_vpaa', ['colleges' => [$cas]])

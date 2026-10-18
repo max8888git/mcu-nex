@@ -462,7 +462,65 @@
     return state.actor === 'vpaa' || state.workspace === 'submitted';
   }
 
+  // Working timetable: which colleges came back (with the note), which are away, or "all approved"
+  function inWorking(c) {
+    if (state.actor === 'admin') return c.status === 'draft';
+    if (state.actor === 'super_admin') return ['draft', 'pending_super_admin', 'with_registrar'].indexOf(c.status) >= 0;
+    return false;
+  }
+
+  function awayText(c) {
+    if (c.status === 'published') return 'approved by the VPAA (in Reports)';
+    if (c.status === 'pending_vpaa') return 'waiting for the VPAA';
+    if (c.status === 'pending_super_admin') return 'waiting for the University Registrar';
+    if (c.status === 'with_registrar') return 'with the University Registrar';
+    return 'with someone else';
+  }
+
+  function cameBack(c) {
+    if (state.actor === 'super_admin' && c.status === 'with_registrar') {
+      if (c.lastRejectFrom === 'vpaa' && c.lastRejectNote) {
+        return { who: 'The VPAA sent it back', note: c.lastRejectNote, at: c.lastRejectAt };
+      }
+      if (c.unlockedAt && c.unlockNote) return { who: 'You unlocked it to fix', note: c.unlockNote, at: c.unlockedAt };
+    }
+    if (state.actor === 'admin' && c.status === 'draft' && c.lastRejectFrom === 'super_admin' && c.lastRejectNote) {
+      return { who: 'The University Registrar sent it back', note: c.lastRejectNote, at: c.lastRejectAt };
+    }
+    return null;
+  }
+
+  function renderWorkingNotes() {
+    var box = doc.getElementById('schedWorkingNotes');
+    if (!box) return;
+    if (!state.term || state.workspace !== 'mine' || !state.colleges.length || state.actor === 'vpaa') {
+      box.hidden = true;
+      return;
+    }
+    var back = state.colleges.map(function (c) { return { c: c, b: cameBack(c) }; }).filter(function (x) { return x.b; });
+    var away = state.colleges.filter(function (c) { return !inWorking(c); });
+    var started = state.colleges.filter(function (c) { return c.status !== 'draft' || c.workspaceClasses || c.hasPublished; });
+    var allApproved = started.length > 0 && started.every(function (c) { return c.status === 'published'; });
+    var html = '';
+    if (allApproved) {
+      html += '<div class="cs-working-done"><strong>All colleges are approved for this term.</strong> ' +
+        'Your Working timetable is empty because there is nothing left to schedule. The approved timetables are in <a href="final-report.html">Reports</a>.</div>';
+    }
+    back.forEach(function (x) {
+      html += '<div class="cs-working-back"><strong>' + esc(x.c.name) + ' is back in your Working timetable.</strong> ' + esc(x.b.who) +
+        (x.b.at ? ' (' + esc(formatWhen(x.b.at)) + ')' : '') + ': <q>' + esc(x.b.note) + '</q></div>';
+    });
+    if (away.length && !allApproved) {
+      html += '<p class="cs-working-away"><strong>Not in your Working timetable:</strong> ' + away.map(function (c) {
+        return esc(c.name) + ' (' + esc(awayText(c)) + ')';
+      }).join(' · ') + '. Their rooms stay booked when you generate.</p>';
+    }
+    box.innerHTML = html;
+    box.hidden = !html;
+  }
+
   function render() {
+    renderWorkingNotes();
     if (!root) return;
     syncSubmitButton();
     if (!state.term || !panelShown()) {

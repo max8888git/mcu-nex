@@ -107,6 +107,7 @@
 @verbatim
         </header>
         <section class="card cs-card" id="schedColleges" aria-labelledby="csTitle" hidden></section>
+        <section class="cs-working" id="schedWorkingNotes" aria-live="polite" hidden></section>
         <section class="card">
           <p class="sched-term-banner" id="schedTermBanner"></p>
           <p class="sched-workspace-hint" id="schedWorkspaceHint"></p>

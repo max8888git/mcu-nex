@@ -90,3 +90,11 @@ jspdf-autotable 5.0.8, new npm dependencies, 0 audit issues).
 - **Notes on single subjects**: reviewers click **Note** on a row. The notes go with the send-back (`rowNotes: { code: note }`, only codes in the version, up to 500 characters each) and show on that subject's row for the people fixing it. With subject notes, the general note may be left out; it then reads "See the notes on N subjects." Bulk send-backs carry no subject notes. The Dean's own drafts are hidden from everyone but the Dean.
 - **Excel**: "Excel template" (and the Start dialog) give an .xlsx file. It has set column widths, a frozen headings row, a purple heading per term, dropdowns (Year Level, Semester, room types, Elective), number checks on units, and a "How to fill" sheet. The import takes .xlsx as well as .csv. `resources/js/curriculum-excel.js` loads ExcelJS only when used; it's a separate 930 kB chunk. `CurriculumStore.parseGrid` reads the rows.
 - npm: `exceljs@4.4.0`, with an `overrides` entry pinning `uuid@^11.1.1` (npm audit: 0 vulnerabilities).
+
+## Several named drafts (2026-10-14)
+
+- A program can have **any number of drafts**. The Program Chair and the Dean each keep their own; the Dean's are hidden from everyone else. Each draft has a **name** (new column `curriculum_reviews.name`, added automatically; the default is "Draft N", and a revision is named "Revision of version N").
+- `create` takes `name`; the new action `rename` (`{ id, name }`) works while the person may edit the draft. Names show on the program card, on the version, in the registrars' list, and in notifications ("version 3, “With new electives”").
+- The program card lists the version **on its way** (with the Dean, approved, or with the Registrar) and then the person's **drafts**, each with Open / Rename / Send to Dean (Program Chair) or Send to Registrar (Dean). Sending is locked while another version is on its way (`curriculum_assert_none_on_the_way`); the other drafts stay saved.
+- The Start dialog asks for a name and can copy any earlier version. The Dean's bulk send takes one per program.
+- The old one-draft limits (and `curriculum_open_version`) are gone. A revision request no longer waits for other drafts.

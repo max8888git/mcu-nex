@@ -686,24 +686,22 @@
           </div>
         </div>
 
-        <div class="am-grid-2">
-          <div>
-            <label class="ui-field-label" for="amPassword" id="amPasswordLabel">Password</label>
-            <div class="am-pw">
-              <input class="ui-input" id="amPassword" type="password" autocomplete="new-password" aria-describedby="amPasswordHint amPasswordError">
-              <button type="button" class="am-reveal" data-am-reveal="amPassword" aria-pressed="false" aria-label="Show password">Show</button>
-            </div>
-            <p class="ui-field-hint" id="amPasswordHint"></p>
-            <p class="ui-field-error" id="amPasswordError" hidden></p>
+        <div class="am-invite" id="amInviteRow">
+          <span class="ui-field-label">Password</span>
+          <p class="am-invite-text">They’ll get an email: <strong>Set up your MCU-NEX account</strong>. They choose their own password from it, which also confirms their email. Nobody else ever knows it.</p>
+          <button type="button" class="am-link" id="amUseStart">Their email doesn’t work? Give a starting password instead</button>
+        </div>
+        <div id="amStartRow">
+          <label class="ui-field-label" for="amPassword" id="amPasswordLabel">Starting password</label>
+          <div class="am-start-pw">
+            <input class="ui-input am-start-input" id="amPassword" type="text" readonly autocomplete="off" spellcheck="false" placeholder="Not changing" aria-describedby="amPasswordHint amPasswordError">
+            <button type="button" class="ui-btn" id="amGenerate">Generate</button>
+            <button type="button" class="ui-btn" id="amCopy" hidden>Copy</button>
+            <button type="button" class="ui-btn" id="amClearPw" hidden>Keep current</button>
           </div>
-          <div>
-            <label class="ui-field-label" for="amPassword2">Confirm password</label>
-            <div class="am-pw">
-              <input class="ui-input" id="amPassword2" type="password" autocomplete="new-password" aria-describedby="amPassword2Error">
-              <button type="button" class="am-reveal" data-am-reveal="amPassword2" aria-pressed="false" aria-label="Show password">Show</button>
-            </div>
-            <p class="ui-field-error" id="amPassword2Error" hidden></p>
-          </div>
+          <input type="hidden" id="amPassword2">
+          <p class="ui-field-hint" id="amPasswordHint"></p>
+          <p class="ui-field-error" id="amPasswordError" hidden></p>
         </div>
 
         <div id="amActiveRow" hidden>

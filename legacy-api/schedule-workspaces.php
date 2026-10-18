@@ -1062,6 +1062,17 @@ function apply_workspace_to_payload(array $payload, PDO $pdo, int $termId, strin
   $rooms = $payload['rooms'] ?? [];
   if ($workspace === 'mine') {
     $snap = load_workspace_copy($pdo, $termId, private_slot_for_actor($actor));
+    // a Working timetable from before colleges left it when sent: tidy it once
+    if ($snap && in_array($actor, ['admin', 'super_admin'], true) && function_exists('college_working_classes_only')) {
+      $kept = college_working_classes_only($pdo, $termId, $actor, $snap['classes'] ?? []);
+      if (count($kept) !== count($snap['classes'] ?? [])) {
+        $snap['classes'] = $kept;
+        $snap['summary'] = schedule_summary($kept);
+        $snap['fingerprint'] = schedule_fingerprint($kept);
+        unset($snap['colleges']);
+        upsert_workspace_copy($pdo, $termId, private_slot_for_actor($actor), $snap);
+      }
+    }
     $payload['classes'] = $snap['classes'] ?? [];
     $payload['summary'] = isset($snap['summary']) ? $snap['summary'] : schedule_summary($payload['classes']);
     // the editable timetable uses today's rooms (types and college rules from Facilities),
@@ -2799,12 +2810,19 @@ function run_private_workspace_mutation(PDO $pdo, array &$body, callable $fn): a
     }
     $classes = isset($out['privateClasses']) && is_array($out['privateClasses']) ? $out['privateClasses'] : [];
     unset($out['privateClasses']);
+    // the away colleges only blocked their rooms; they don't come back into this Working timetable
+    if (function_exists('college_working_classes_only')) {
+      $classes = college_working_classes_only($pdo, $termId, $actor, $classes);
+    }
     upsert_workspace_copy($pdo, $termId, $slot, schedule_live_snapshot($pdo, $year, $sem, $classes));
     return apply_workspace_to_payload($out, $pdo, $termId, $actor, 'mine', 'create');
   }
   $private = load_workspace_copy($pdo, $termId, $slot);
   if (!workspace_has_classes($private)) {
     throw new RuntimeException('There is no personal schedule to edit. Generate one here or open a save.');
+  }
+  if (function_exists('college_working_classes_only')) {
+    $private['classes'] = college_working_classes_only($pdo, $termId, $actor, $private['classes'] ?? []);
   }
   if (function_exists('assert_edit_target_not_locked')) {
     assert_edit_target_not_locked($pdo, $termId, $body, $private['classes'] ?? []);

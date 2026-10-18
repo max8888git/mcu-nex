@@ -1,0 +1,28 @@
+/* Reports → Finished curriculums (curriculum-archive.js); tables reuse college-timetable.css */
+.fc-bar { margin-bottom: 1rem; }
+.fc-group { margin-bottom: 1.6rem; }
+.fc-title { display: flex; align-items: center; gap: 0.5rem; font-size: 1.1rem; font-weight: 700; color: var(--ui-purple-dark); }
+.fc-count { padding: 0 0.55rem; border-radius: 999px; background: var(--ui-purple-soft); color: var(--ui-purple); font-size: 0.8rem; }
+.fc-lead { margin: 0.25rem 0 0.75rem; font-size: 0.88rem; color: var(--ui-muted); line-height: 1.5; }
+.fc-empty { padding: 0.9rem 1rem; border: 1px dashed var(--ui-line); border-radius: 0.75rem; color: var(--ui-muted); font-size: 0.88rem; }
+.fc-list { list-style: none; display: flex; flex-direction: column; border: 1px solid var(--ui-line); border-radius: 0.85rem; overflow: hidden; }
+.fc-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; padding: 0.75rem 1rem; background: #fff; }
+.fc-row + .fc-row { border-top: 1px solid #f1ecf6; }
+.fc-group--quiet .fc-row { background: #fcfbfd; }
+.fc-row-main { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.fc-name { color: var(--ui-purple-dark); }
+.fc-curname { font-size: 0.86rem; color: var(--ui-text); }
+.fc-meta { font-size: 0.8rem; color: var(--ui-muted); }
+.fc-keep { font-size: 0.8rem; color: var(--ui-muted); align-self: center; cursor: help; }
+.fc-row-actions { display: flex; gap: 0.45rem; }
+.fc-row-actions .ui-btn { min-height: 36px; padding: 0.3rem 0.85rem; font-size: 0.85rem; }
+.fc-dialog { width: min(980px, calc(100vw - 2rem)); }
+.fc-dialog .ui-dialog-body { max-height: 70vh; overflow: auto; }
+.fc-tabs { display: flex; gap: 0.4rem; margin-bottom: 0.9rem; }
+.fc-tab { padding: 0.4rem 0.9rem; border: 1px solid var(--ui-line); border-radius: 999px; background: #fff; color: var(--ui-muted); font: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+.fc-tab.is-active { border-color: var(--ui-purple); background: var(--ui-purple); color: #fff; }
+.fc-term { margin-bottom: 0.6rem; border: 1px solid var(--ui-line); border-radius: 0.75rem; overflow: hidden; }
+.fc-term > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.8rem; padding: 0.65rem 0.9rem; background: var(--ui-purple-soft); color: var(--ui-purple-dark); cursor: pointer; }
+.fc-term > summary .fc-meta { margin-left: auto; }
+.fc-section { margin: 0.8rem 0.9rem 0.35rem; font-size: 0.88rem; font-weight: 700; color: var(--ui-purple); }
+.fc-term .ct-scroll { margin: 0 0.9rem 0.6rem; border: 1px solid #f1ecf6; border-radius: 0.6rem; }

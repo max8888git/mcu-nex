@@ -7,15 +7,15 @@
 @endverbatim
 @if ($role === 'viewing-program-head')
 @verbatim
-  <title>MCU-NEX | Program Head – Dashboard</title>
+  <title>MCU-NEX | Program Chair – Dashboard</title>
 @endverbatim
 @elseif ($role === 'viewing-with-approval')
 @verbatim
-  <title>MCU-NEX | Viewing (approval) – Dashboard</title>
+  <title>MCU-NEX | VPAA – Dashboard</title>
 @endverbatim
 @else
 @verbatim
-  <title>MCU-NEX | CAS – Dashboard</title>
+  <title>MCU-NEX | Dean – Dashboard</title>
 @endverbatim
 @endif
   @fonts
@@ -501,11 +501,13 @@
   <x-legacy-css name="app-nav" />
   <x-legacy-css name="profile" />
   <x-legacy-css name="page-loading" />
-@if ($role !== 'viewing-with-approval')
   <x-legacy-css name="ui" />
   <x-legacy-css name="college-timetable" />
-  @vite('resources/js/curriculum-pdf.js')
+@if ($role === 'viewing-with-approval')
+  <x-legacy-css name="schedule-colleges" />
+  <x-legacy-css name="vpaa-board" />
 @endif
+  @vite('resources/js/curriculum-pdf.js')
   <x-legacy-js name="page-loading" />
 @verbatim
 </head>
@@ -532,7 +534,7 @@
 @endverbatim
 @elseif ($role === 'viewing-with-approval')
 @verbatim
-        <span class="chip">Viewing (approval)</span>
+        <span class="chip">VPAA</span>
 @endverbatim
 @else
 @verbatim
@@ -582,7 +584,7 @@
 @endverbatim
 @elseif ($role === 'viewing-with-approval')
 @verbatim
-          <p class="report-meta" id="vpaaTerm" style="margin-top:0.5rem;margin-bottom:0">Loading the current offering…</p>
+          <p class="report-meta" style="margin-top:0.5rem;margin-bottom:0">Timetables waiting for your approval, one box per college. Click a box to check it, then approve or send it back.</p>
 @endverbatim
 @else
 @verbatim
@@ -597,7 +599,7 @@
 @endverbatim
 @if ($role === 'viewing-program-head')
 @verbatim
-        <section class="ct-card" id="ctRoot" aria-label="Approved timetable"></section>
+        <section class="ct-card" id="ctRoot" data-mode="current" aria-label="Approved timetable"></section>
 
         <div class="report-page-toolbar report-page-toolbar--request-only no-print">
           <a class="dashboard-request-btn" href="curriculum-builder.html" aria-label="New curriculum">+ New</a>
@@ -605,15 +607,11 @@
 @endverbatim
 @elseif ($role === 'viewing-with-approval')
 @verbatim
-        <a class="vpaa-home-card" id="vpaaHomeCard" href="final-report.html?ws=final">
-          <span class="vpaa-home-kicker">Timetable</span>
-          <span class="vpaa-home-title" id="vpaaHomeTitle">Checking the timetable…</span>
-          <span class="vpaa-home-hint" id="vpaaHomeHint">Open the Final report</span>
-        </a>
+        <section class="vb-card" id="vbRoot" data-mode="waiting" aria-label="Timetables for your approval"></section>
 @endverbatim
 @else
 @verbatim
-        <section class="ct-card" id="ctRoot" aria-label="Approved timetable"></section>
+        <section class="ct-card" id="ctRoot" data-mode="current" aria-label="Approved timetable"></section>
 
         <div class="report-page-toolbar report-page-toolbar--request-only no-print">
           <a class="dashboard-request-btn" href="viewer-requests.html">+ Request</a>
@@ -652,109 +650,6 @@
       }
     })();
 
-@endverbatim
-@if ($role === 'viewing-program-head')
-@verbatim
-    var CAS_DEPARTMENTS = [
-      { value: 'cs', label: 'Computer Science' },
-      { value: 'it', label: 'Information Technology' },
-      { value: 'emc', label: 'Emerging Media' }
-    ];
-
-    function esc(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-@endverbatim
-@elseif ($role === 'viewing-with-approval')
-@verbatim
-    function semesterName(code) {
-      if (code === '2') return '2nd semester';
-      if (code === 'summer') return 'Summer';
-      return '1st semester';
-@endverbatim
-@else
-@verbatim
-    var CAS_DEPARTMENTS = [
-      { value: 'cs', label: 'Computer Science' },
-      { value: 'it', label: 'Information Technology' },
-      { value: 'emc', label: 'Emerging Media' },
-      { value: 'psych', label: 'Psychology' }
-    ];
-
-    function esc(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-@endverbatim
-@endif
-@verbatim
-    }
-
-@endverbatim
-@if ($role === 'viewing-with-approval')
-@verbatim
-    function showHome(data) {
-      var termEl = document.getElementById('vpaaTerm');
-      var card = document.getElementById('vpaaHomeCard');
-      var title = document.getElementById('vpaaHomeTitle');
-      var hint = document.getElementById('vpaaHomeHint');
-      if (!termEl || !card || !title || !hint) return;
-      var year = data && data.schoolYear ? String(data.schoolYear) : '';
-      var term = year ? year + ' · ' + semesterName(data.termCode) : '';
-      if (!term) {
-        termEl.textContent = 'No current offering yet.';
-      } else {
-        termEl.textContent = 'Current offering: ' + term;
-      }
-      if (data && data.awaiting) {
-        title.textContent = term
-          ? 'A timetable for ' + term + ' is waiting for your approval.'
-          : 'A timetable is waiting for your approval.';
-        hint.textContent = 'Open Awaiting the VPAA’s approval';
-        card.href = 'final-report.html?ws=awaiting';
-      } else {
-        title.textContent = term
-          ? 'Nothing is waiting for your approval for ' + term + '.'
-          : 'Nothing is waiting for your approval.';
-        hint.textContent = 'Open the Final report';
-        card.href = 'final-report.html?ws=final';
-      }
-@endverbatim
-@else
-@verbatim
-    function buildDeptCards() {
-      var grid = document.getElementById('deptCardsGrid');
-      if (!grid) return;
-      grid.innerHTML = '';
-      CAS_DEPARTMENTS.forEach(function (opt) {
-        var a = document.createElement('a');
-        a.className = 'dept-card';
-        a.href = 'department-report.html?program=' + encodeURIComponent(opt.value);
-        a.setAttribute('role', 'listitem');
-        a.setAttribute('aria-label', 'Open report for ' + opt.label);
-        a.innerHTML =
-          '<span class="dept-card__name">' + esc(opt.label) + '</span>' +
-          '<span class="dept-card__hint">View report</span>';
-        grid.appendChild(a);
-      });
-@endverbatim
-@endif
-@verbatim
-    }
-@endverbatim
-@if ($role === 'viewing-with-approval')
-@else
-@verbatim
-
-    buildDeptCards();
-@endverbatim
-@endif
-@verbatim
   </script>
   <script>
     (function () {
@@ -775,20 +670,8 @@
     <x-legacy-js name="api-client" />
   <x-legacy-js name="session-boot" />
 @if ($role === 'viewing-with-approval')
-@verbatim
-  <script>
-    window.McuApi.get('schedule.php?home=vpaa')
-      .then(showHome)
-      .catch(function (err) {
-        var termEl = document.getElementById('vpaaTerm');
-        var title = document.getElementById('vpaaHomeTitle');
-        if (termEl) termEl.textContent = err.message || 'The timetable status could not be loaded.';
-        if (title) title.textContent = 'Open Reports to see the timetable.';
-      });
-  </script>
-@endverbatim
-@endif
-@if ($role !== 'viewing-with-approval')
+  <x-legacy-js name="vpaa-board" />
+@else
   <x-legacy-js name="college-timetable" />
 @endif
   <x-legacy-js name="notifications" defer />

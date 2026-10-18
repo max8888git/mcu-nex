@@ -318,3 +318,17 @@
         width: 100%;
     }
 }
+
+/* starting password (Generate) and email status */
+.am-start-pw { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.am-start-input { flex: 1 1 9rem; max-width: 14rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 1rem; letter-spacing: 0.06em; background: #faf8fc; }
+.am-mailrow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin-top: 0.2rem; }
+.am-mail { display: inline-block; padding: 0 0.45rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; }
+.am-mail--ok { background: #f0fdf4; color: #15803d; }
+.am-mail--no { background: #fef3c7; color: #92400e; }
+.am-mail--wait { background: #f1f5f9; color: #475569; }
+.am-link { padding: 0; border: none; background: none; color: var(--ui-purple, #5c267e); font: inherit; font-size: 0.74rem; font-weight: 600; text-decoration: underline; cursor: pointer; }
+.am-link:disabled { opacity: 0.5; cursor: default; }
+
+/* new accounts: invite by email (default) */
+.am-invite-text { margin: 0.2rem 0 0.4rem; padding: 0.55rem 0.75rem; border-radius: 0.55rem; background: #f6f1fc; color: #4b3d5e; font-size: 0.84rem; line-height: 1.5; }

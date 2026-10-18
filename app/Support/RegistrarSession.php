@@ -115,6 +115,8 @@ class RegistrarSession
         }
 
         $role = (string) $row->role;
+        AccountEmail::ensureSchema();
+        $flags = DB::table('users')->where('user_id', $id)->first(); // the columns are added by AccountEmail (MySQL)
 
         return [
             'id' => self::publicId('u', (int) $row->user_id),
@@ -130,6 +132,10 @@ class RegistrarSession
             'programIds' => $programIds,
             'programNames' => $programNames,
             'home' => self::home($role),
+            // account emails (AccountEmail): a starting password must be changed first; reset by email needs a confirmed address
+            'mustChangePassword' => (bool) ($flags->must_change_password ?? false),
+            'emailConfirmed' => ! empty($flags->email_verified_at),
+            'passwordPending' => (bool) ($flags->password_pending ?? false),
             'photoUrl' => ProfilePhoto::url((int) $row->user_id),
         ];
     }

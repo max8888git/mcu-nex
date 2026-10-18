@@ -378,26 +378,32 @@ function locked_college_classes(PDO $pdo, int $termId): array
  */
 function apply_college_locks_to_generate(PDO $pdo, int $termId, array &$body): void
 {
-  $locked = locked_college_classes($pdo, $termId);
-  if (!$locked) {
+  // colleges away from this actor's Working timetable (with someone else, or approved):
+  // their sections aren't scheduled here, and their rooms stay booked
+  $actor = normalize_schedule_actor((string) ($body['actor'] ?? ''));
+  $away = college_away_classes($pdo, $termId, $actor);
+  if (!$away) {
     return;
   }
   $keep = [];
-  foreach ($locked as $classes) {
+  foreach ($away as $classes) {
     foreach ($classes as $c) {
-      $keep[] = $c;
+      if (is_array($c)) {
+        $keep[] = $c;
+      }
     }
   }
   $seed = [];
   if (!empty($body['onlyUnscheduled']) && is_array($body['seedPrivateClasses'] ?? null)) {
     foreach ($body['seedPrivateClasses'] as $c) {
-      if (is_array($c) && !isset($locked[class_college_id($c)])) {
+      if (is_array($c) && !isset($away[class_college_id($c)])) {
         $seed[] = $c;
       }
     }
   }
   $body['onlyUnscheduled'] = true;
   $body['seedPrivateClasses'] = array_merge($keep, $seed);
+  $body['skipCollegeIds'] = array_keys($away);
 }
 
 /**
@@ -550,17 +556,23 @@ function college_final_for_viewer(PDO $pdo, array $query): array
   foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $t) {
     $terms[(int) $t['term_id']] = ['id' => (int) $t['term_id'], 'label' => term_offering_label((string) $t['label'], (string) $t['term_code'])];
   }
+  // scope "current" (Dashboard): the current offering only; "past" (Past timetables): every other approved term
   $current = current_offering_term($pdo);
-  $termId = (int) ($query['term'] ?? 0);
-  if (!$termId || (!isset($terms[$termId]) && (!$current || $termId !== $current['termId']))) {
-    $termId = $current ? $current['termId'] : (int) (array_key_first($terms) ?? 0);
-  }
-  if ($current && !isset($terms[$current['termId']])) {
-    $terms = [$current['termId'] => ['id' => $current['termId'], 'label' => term_offering_label($current['schoolYear'], $current['termCode'])]] + $terms;
+  if (($query['scope'] ?? 'current') === 'past') {
+    if ($current) {
+      unset($terms[$current['termId']]);
+    }
+    $termId = (int) ($query['term'] ?? 0);
+    if (!isset($terms[$termId])) {
+      $termId = (int) (array_key_first($terms) ?? 0);
+    }
+  } else {
+    $termId = $current ? (int) $current['termId'] : 0;
+    $terms = $current ? [$termId => ['id' => $termId, 'label' => term_offering_label($current['schoolYear'], $current['termCode'])]] : [];
   }
 
   $row = $termId ? college_row($pdo, $termId, $me['college_id']) : [];
-  $snap = snapshot_for_college(decode_snapshot($row['published_json'] ?? null), $me['college_id']);
+  $snap = $termId ? college_published_snapshot($pdo, $termId, $me['college_id']) : null;
   $classes = $snap ? $snap['classes'] : [];
   // tag each class with the viewer's program; matched by name too, since a saved copy can
   // point at an older program row (e.g. a program re-created under another department)
@@ -594,6 +606,152 @@ function college_final_for_viewer(PDO $pdo, array $query): array
   ];
 }
 
+/** Only the VPAA and the registrars look at any college's timetable copies. */
+function college_require_reviewer(PDO $pdo): string
+{
+  return college_require_role($pdo, ['vpaa', 'super_admin', 'admin'], 'Only the VPAA and the registrars can open this.');
+}
+
+/**
+ * A college's approved copy for a term: its own row, or (for terms approved before the
+ * per-college approval) its classes in the whole-campus published copy.
+ */
+function college_published_snapshot(PDO $pdo, int $termId, int $collegeId): ?array
+{
+  $row = college_row($pdo, $termId, $collegeId);
+  if ($snap = snapshot_for_college(decode_snapshot($row['published_json'] ?? null), $collegeId)) {
+    return $snap;
+  }
+  if (!schema_table_exists($pdo, 'term_schedule_approvals')) {
+    return null;
+  }
+  $stmt = $pdo->prepare('SELECT published_json FROM term_schedule_approvals WHERE term_id = ?');
+  $stmt->execute([$termId]);
+  return snapshot_for_college(decode_snapshot($stmt->fetchColumn() ?: null), $collegeId);
+}
+
+/** Program names for classes (departmentId → program), with each class tagged programId / programName. */
+function college_tag_programs(PDO $pdo, int $collegeId, array $classes): array
+{
+  $stmt = $pdo->prepare('SELECT program_id, program_name, is_active FROM programs WHERE college_id = ? ORDER BY program_name');
+  $stmt->execute([$collegeId]);
+  $all = $stmt->fetchAll(PDO::FETCH_ASSOC);
+  $byId = [];
+  $activeByName = [];
+  foreach ($all as $p) {
+    $byId[(int) $p['program_id']] = $p;
+    if ((int) $p['is_active'] === 1) {
+      $activeByName[strtolower(trim((string) $p['program_name']))] = $p;
+    }
+  }
+  $used = [];
+  foreach ($classes as &$c) {
+    $pid = (int) (parse_id((string) ($c['departmentId'] ?? ''), 'd') ?: 0);
+    $p = $byId[$pid] ?? null;
+    // an older copy may point at a program row that was re-created; use the active one with that name
+    if ($p && (int) $p['is_active'] !== 1) {
+      $p = $activeByName[strtolower(trim((string) $p['program_name']))] ?? $p;
+    }
+    $name = $p ? (string) $p['program_name'] : (string) ($c['collegeName'] ?? 'Whole college');
+    $id = $p ? public_id('d', (int) $p['program_id']) : 'all';
+    $c['programId'] = $id;
+    $c['programName'] = $name;
+    $used[$id] = $name;
+  }
+  unset($c);
+  asort($used);
+  $programs = [];
+  foreach ($used as $id => $name) {
+    $programs[] = ['id' => $id, 'name' => $name];
+  }
+  return [$classes, $programs];
+}
+
+/**
+ * One college's timetable for the VPAA's boxes: the copy waiting for approval ("pending")
+ * or the approved one ("published"), for the current offering or a given term.
+ */
+function college_copy_for_review(PDO $pdo, array $query): array
+{
+  ensure_college_approval_schema($pdo);
+  college_require_reviewer($pdo);
+  $cid = (int) (parse_id((string) ($query['college'] ?? ''), 'c') ?: 0);
+  $names = college_names($pdo);
+  if (!isset($names[$cid])) {
+    throw new RuntimeException('That college was not found.');
+  }
+  $termId = (int) ($query['term'] ?? 0);
+  if (!$termId) {
+    $current = current_offering_term($pdo);
+    $termId = $current ? (int) $current['termId'] : 0;
+  }
+  $stmt = $pdo->prepare('SELECT t.term_id, t.term_code, sy.label FROM terms t JOIN school_years sy ON sy.school_year_id = t.school_year_id WHERE t.term_id = ?');
+  $stmt->execute([$termId]);
+  $t = $stmt->fetch(PDO::FETCH_ASSOC);
+  if (!$t) {
+    throw new RuntimeException('That term was not found.');
+  }
+  ensure_college_rows($pdo, $termId);
+  $row = college_row($pdo, $termId, $cid);
+  $which = (string) ($query['which'] ?? '') === 'pending' ? 'pending' : 'published';
+  $snap = $which === 'pending'
+    ? snapshot_for_college(decode_snapshot($row['vpaa_json'] ?? null), $cid)
+    : college_published_snapshot($pdo, $termId, $cid);
+  [$classes, $programs] = college_tag_programs($pdo, $cid, $snap['classes'] ?? []);
+  return [
+    'college' => ['id' => public_id('c', $cid), 'name' => $names[$cid]],
+    'term' => ['id' => $termId, 'schoolYear' => (string) $t['label'], 'termCode' => (string) $t['term_code'],
+      'label' => term_offering_label((string) $t['label'], (string) $t['term_code'])],
+    'which' => $which,
+    'status' => (string) ($row['status'] ?? 'draft'),
+    'sentAt' => $row['vpaa_at'] ?? null,
+    'publishedAt' => $row['published_at'] ?? null,
+    'lastRejectFrom' => $row['last_reject_from'] ?? null,
+    'lastRejectNote' => $row['last_reject_note'] ?? null,
+    'lastRejectAt' => $row['last_reject_at'] ?? null,
+    'programs' => $programs,
+    'classes' => $classes,
+  ];
+}
+
+/** Every term with an approved timetable, newest first, and the colleges approved in it. */
+function vpaa_history(PDO $pdo): array
+{
+  ensure_college_approval_schema($pdo);
+  college_require_reviewer($pdo);
+  $names = college_names($pdo);
+  $terms = $pdo->query(
+    'SELECT t.term_id, t.term_code, t.is_active, t.archived_label, sy.label
+     FROM terms t JOIN school_years sy ON sy.school_year_id = t.school_year_id
+     ORDER BY sy.label DESC, t.term_order DESC, t.term_code DESC'
+  )->fetchAll(PDO::FETCH_ASSOC);
+  $out = [];
+  foreach ($terms as $t) {
+    $termId = (int) $t['term_id'];
+    $colleges = [];
+    foreach ($names as $cid => $name) {
+      $snap = college_published_snapshot($pdo, $termId, $cid);
+      if (!$snap) {
+        continue;
+      }
+      $row = college_row($pdo, $termId, $cid);
+      $sections = [];
+      foreach ($snap['classes'] as $c) {
+        $sections[(string) ($c['sectionId'] ?? '')] = true;
+      }
+      $colleges[] = ['id' => public_id('c', $cid), 'name' => $name, 'classes' => count($snap['classes']), 'sections' => count($sections),
+        'publishedAt' => $row['published_at'] ?? null, 'status' => (string) ($row['status'] ?? 'published')];
+    }
+    if (!$colleges) {
+      continue;
+    }
+    $out[] = ['id' => $termId, 'label' => term_offering_label((string) $t['label'], (string) $t['term_code']),
+      'schoolYear' => (string) $t['label'], 'termCode' => (string) $t['term_code'],
+      'current' => (int) $t['is_active'] === 1, 'archivedLabel' => (string) ($t['archived_label'] ?? ''), 'colleges' => $colleges];
+  }
+  return ['terms' => $out];
+}
+
 // ----- actions -----
 
 /** Snapshot of the actor's own schedule, split by college; every chosen college must be complete. */
@@ -616,15 +774,128 @@ function college_copies_from_workspace(PDO $pdo, int $termId, string $year, stri
   return $copies;
 }
 
-/** Replace these colleges' classes in the Registrar's working timetable with the given copies. */
-function college_put_in_working(PDO $pdo, int $termId, array $copies): void
+/** Replace these colleges' classes in an actor's Working timetable with the given copies (college id => snapshot). */
+function college_put_in_working(PDO $pdo, int $termId, array $copies, string $actor = 'super_admin'): void
 {
-  $slot = private_slot_for_actor('super_admin');
+  if (!$copies) {
+    return;
+  }
+  $slot = private_slot_for_actor($actor);
   $mine = load_workspace_copy($pdo, $termId, $slot) ?: empty_workspace_snapshot();
   $keep = array_values(array_filter($mine['classes'] ?? [], static fn ($c) => is_array($c) && !isset($copies[class_college_id($c)])));
   $merged = merge_college_snapshots(array_merge([array_merge($mine, ['classes' => $keep])], array_values($copies)));
   unset($merged['colleges']);
   upsert_workspace_copy($pdo, $termId, $slot, $merged);
+}
+
+/**
+ * Is this college worked on in the actor's Working timetable right now?
+ * Records Officer: only their drafts. University Registrar: drafts, what the Records Officer
+ * sent, and what's with them. Everything else is "away" (with someone else, or approved).
+ */
+function college_in_working_for(string $actor, string $status): bool
+{
+  if ($actor === 'admin') {
+    return $status === 'draft';
+  }
+  if ($actor === 'super_admin') {
+    return in_array($status, ['draft', 'pending_super_admin', 'with_registrar'], true);
+  }
+  return false;
+}
+
+/**
+ * Classes of the colleges that are away from the actor's Working timetable (college id => classes).
+ * Generate keeps their rooms booked, so nothing is double-booked while they're away.
+ */
+function college_away_classes(PDO $pdo, int $termId, string $actor): array
+{
+  ensure_college_rows($pdo, $termId);
+  $registrar = null;
+  $out = [];
+  foreach (college_rows($pdo, $termId) as $cid => $r) {
+    $status = (string) ($r['status'] ?? 'draft');
+    if (college_in_working_for($actor, $status)) {
+      continue;
+    }
+    $snap = null;
+    if ($status === 'with_registrar') {
+      // the University Registrar is working on it: their current copy
+      $registrar ??= load_workspace_copy($pdo, $termId, private_slot_for_actor('super_admin'));
+      $snap = snapshot_for_college($registrar, $cid) ?: snapshot_for_college(decode_snapshot($r['sa_json'] ?? null), $cid);
+    } elseif ($status === 'pending_super_admin') {
+      $snap = snapshot_for_college(decode_snapshot($r['sa_json'] ?? null), $cid);
+    } elseif ($status === 'pending_vpaa') {
+      $snap = snapshot_for_college(decode_snapshot($r['vpaa_json'] ?? null), $cid);
+    } elseif ($status === 'published') {
+      $snap = snapshot_for_college(decode_snapshot($r['published_json'] ?? null), $cid);
+    }
+    $out[$cid] = $snap['classes'] ?? [];
+  }
+  return $out;
+}
+
+/** Only the classes of colleges that belong in the actor's Working timetable. */
+function college_working_classes_only(PDO $pdo, int $termId, string $actor, array $classes): array
+{
+  $away = college_away_classes($pdo, $termId, $actor);
+  if (!$away) {
+    return $classes;
+  }
+  return array_values(array_filter($classes, static fn ($c) => !is_array($c) || !isset($away[class_college_id($c)])));
+}
+
+/**
+ * Take colleges out of the actor's Working timetable (they were sent on) and keep a copy of
+ * each in the actor's saves, e.g. "College of Pharmacy – sent to the VPAA, Oct 17, 2026 3:40 PM".
+ */
+function college_take_out_of_working(PDO $pdo, int $termId, string $actor, array $copies, string $why): void
+{
+  if (!$copies) {
+    return;
+  }
+  $slot = private_slot_for_actor($actor);
+  $mine = load_workspace_copy($pdo, $termId, $slot);
+  if ($mine) {
+    $mine['classes'] = array_values(array_filter($mine['classes'] ?? [], static fn ($c) => is_array($c) && !isset($copies[class_college_id($c)])));
+    $mine['summary'] = schedule_summary($mine['classes']);
+    $mine['fingerprint'] = schedule_fingerprint($mine['classes']);
+    unset($mine['colleges']);
+    upsert_workspace_copy($pdo, $termId, $slot, $mine);
+  }
+  $when = (string) $pdo->query("SELECT DATE_FORMAT(NOW(), '%b %e, %Y %l:%i %p')")->fetchColumn();
+  $names = college_names($pdo);
+  $insert = $pdo->prepare("INSERT INTO schedule_copies (term_id, slot, kind, owner_role, title, payload) VALUES (?, 'save', 'save', ?, ?, ?)");
+  foreach ($copies as $cid => $copy) {
+    $title = mb_substr(($names[$cid] ?? 'College') . ' – ' . $why . ', ' . $when, 0, 120);
+    $insert->execute([$termId, $actor, $title, json_encode($copy, JSON_UNESCAPED_UNICODE)]);
+  }
+}
+
+/** Remove colleges from the actor's Working timetable without a copy (the same copy is kept elsewhere). */
+function college_drop_from_working(PDO $pdo, int $termId, string $actor, array $ids): void
+{
+  if (!$ids) {
+    return;
+  }
+  $slot = private_slot_for_actor($actor);
+  $mine = load_workspace_copy($pdo, $termId, $slot);
+  if (!$mine) {
+    return;
+  }
+  $drop = array_flip($ids);
+  $mine['classes'] = array_values(array_filter($mine['classes'] ?? [], static fn ($c) => is_array($c) && !isset($drop[class_college_id($c)])));
+  $mine['summary'] = schedule_summary($mine['classes']);
+  $mine['fingerprint'] = schedule_fingerprint($mine['classes']);
+  unset($mine['colleges']);
+  upsert_workspace_copy($pdo, $termId, $slot, $mine);
+}
+
+/** A college's copy from a stored column (sa_json, vpaa_json, published_json), as college id => snapshot. */
+function college_copy_from_row(array $row, int $cid, string $column): array
+{
+  $snap = snapshot_for_college(decode_snapshot($row[$column] ?? null), $cid);
+  return $snap ? [$cid => $snap] : [];
 }
 
 function college_assert_can_send(array $row, string $name, string $role = 'super_admin'): void
@@ -663,12 +934,14 @@ function college_action(PDO $pdo, array $body, string $action): array
       foreach ($ids as $cid) {
         college_assert_can_send($row($cid), $names[$cid], 'admin');
       }
-      foreach (college_copies_from_workspace($pdo, $termId, $year, $sem, $role, $ids, 'submit') as $cid => $copy) {
+      $copies = college_copies_from_workspace($pdo, $termId, $year, $sem, $role, $ids, 'submit');
+      foreach ($copies as $cid => $copy) {
         save_college_row($pdo, $termId, $cid, [
           'status' => 'pending_super_admin', 'sa_json' => encode_snapshot($copy), 'sa_at' => 'NOW()',
           'last_reject_from' => null, 'last_reject_note' => null, 'last_reject_at' => null,
         ]);
       }
+      college_take_out_of_working($pdo, $termId, 'admin', $copies, 'sent to the University Registrar');
       notify_roles($pdo, ['super_admin'], 'timetable_send', 'Records Officer sent timetables for review',
         'Records Officer sent ' . $list . ' (' . $term . ') for your review.', 'create-schedule.html?ws=submitted', 'Timetable');
       record_transaction($pdo, 'Submit', 'schedule', 'Sent ' . $list . ' (' . $term . ') to the University Registrar.');
@@ -683,7 +956,8 @@ function college_action(PDO $pdo, array $body, string $action): array
         }
       }
       foreach ($ids as $cid) {
-        // back to draft so it can be fixed and sent again; a published copy stays live
+        // back into the sender's Working timetable so it can be fixed and sent again; a published copy stays live
+        college_put_in_working($pdo, $termId, college_copy_from_row($row($cid), $cid, $from === 'pending_super_admin' ? 'sa_json' : 'vpaa_json'), $role);
         save_college_row($pdo, $termId, $cid, $from === 'pending_super_admin'
           ? ['status' => 'draft', 'is_locked' => 0, 'sa_json' => null, 'sa_at' => null]
           : ['status' => 'with_registrar', 'is_locked' => 0, 'vpaa_json' => null, 'vpaa_at' => null]);
@@ -740,7 +1014,15 @@ function college_action(PDO $pdo, array $body, string $action): array
           'University Registrar approved ' . $list . ' (' . $term . '). They’ll send it to the VPAA.', 'create-schedule.html?ws=submitted', 'Timetable');
         record_transaction($pdo, 'Approve', 'schedule', 'Approved ' . $list . ' (' . $term . ') from the Records Officer.');
       } else {
+        $mineNow = load_workspace_copy($pdo, $termId, private_slot_for_actor('super_admin'));
         foreach ($ids as $cid) {
+          // back to the Records Officer: the Registrar's copy if they were working on it, else what was sent
+          $st = (string) ($row($cid)['status'] ?? '');
+          $copy = $st === 'with_registrar' && ($own = snapshot_for_college($mineNow, $cid)) ? [$cid => $own] : college_copy_from_row($row($cid), $cid, 'sa_json');
+          college_put_in_working($pdo, $termId, $copy, 'admin');
+          if ($st === 'with_registrar') {
+            college_drop_from_working($pdo, $termId, 'super_admin', [$cid]);
+          }
           save_college_row($pdo, $termId, $cid, ['status' => 'draft', 'is_locked' => 0, 'sa_json' => null, 'sa_at' => null,
             'last_reject_from' => 'super_admin', 'last_reject_note' => $note, 'last_reject_at' => 'NOW()']);
         }
@@ -761,7 +1043,9 @@ function college_action(PDO $pdo, array $body, string $action): array
         college_assert_can_send($row($cid), $names[$cid]);
       }
       $edited = [];
-      foreach (college_copies_from_workspace($pdo, $termId, $year, $sem, $role, $ids, 'submit_to_vpaa') as $cid => $copy) {
+      $copies = college_copies_from_workspace($pdo, $termId, $year, $sem, $role, $ids, 'submit_to_vpaa');
+      college_take_out_of_working($pdo, $termId, 'super_admin', $copies, 'sent to the VPAA');
+      foreach ($copies as $cid => $copy) {
         $sent = snapshot_for_college(decode_snapshot($row($cid)['sa_json'] ?? null), $cid);
         if (!in_array($cid, $replaced, true) && $sent && schedule_fingerprint($sent['classes']) !== schedule_fingerprint($copy['classes'])) {
           $edited[] = $cid; // the Records Officer's version, changed by the Registrar
@@ -826,6 +1110,9 @@ function college_action(PDO $pdo, array $body, string $action): array
       }
       foreach ($ids as $cid) {
         $r = $row($cid);
+        if (!$accept) {
+          college_put_in_working($pdo, $termId, college_copy_from_row($r, $cid, 'vpaa_json'), 'super_admin');
+        }
         save_college_row($pdo, $termId, $cid, $accept
           ? ['status' => 'published', 'published_json' => $r['vpaa_json'], 'published_at' => 'NOW()', 'vpaa_json' => null, 'vpaa_at' => null,
              'is_locked' => 1, 'unlock_note' => null, 'unlocked_at' => null,
@@ -861,12 +1148,34 @@ function college_action(PDO $pdo, array $body, string $action): array
         }
       }
       foreach ($ids as $cid) {
-        // the published copy stays live until a corrected one is approved
+        // the published copy stays live until a corrected one is approved; a copy goes into the Working timetable to fix
+        college_put_in_working($pdo, $termId, college_copy_from_row($row($cid), $cid, 'published_json'), 'super_admin');
         save_college_row($pdo, $termId, $cid, ['status' => 'with_registrar', 'is_locked' => 0, 'unlock_note' => $note, 'unlocked_at' => 'NOW()']);
       }
       notify_roles($pdo, ['vpaa', 'admin'], 'timetable_return', 'A published timetable was unlocked for corrections',
         'University Registrar unlocked ' . $list . ' (' . $term . ') to fix a mistake. ' . notify_note_snippet($note), 'final-report', 'Timetable');
       record_transaction($pdo, 'Unlock', 'schedule', 'Unlocked ' . $list . ' (' . $term . ') for corrections. Reason: ' . mb_substr($note, 0, 180));
+      break;
+    }
+    case 'college_vpaa_retract': {
+      college_require_role($pdo, ['vpaa'], 'Only the VPAA can retract an approval.');
+      if ($note === '') {
+        throw new RuntimeException('Say why you’re retracting it and what the University Registrar should fix.');
+      }
+      foreach ($ids as $cid) {
+        if (($row($cid)['status'] ?? '') !== 'published') {
+          throw new RuntimeException($names[$cid] . ' isn’t an approved timetable right now.');
+        }
+      }
+      foreach ($ids as $cid) {
+        // back to the University Registrar; the approved copy stays in use until a corrected one is approved
+        college_put_in_working($pdo, $termId, college_copy_from_row($row($cid), $cid, 'published_json'), 'super_admin');
+        save_college_row($pdo, $termId, $cid, ['status' => 'with_registrar', 'is_locked' => 0,
+          'last_reject_from' => 'vpaa', 'last_reject_note' => $note, 'last_reject_at' => 'NOW()']);
+      }
+      notify_roles($pdo, ['super_admin', 'admin'], 'timetable_return', 'The VPAA retracted an approval',
+        'The VPAA retracted the approval of ' . $list . ' (' . $term . ') and sent it back. ' . notify_note_snippet($note), 'create-schedule.html?ws=submitted', 'Timetable');
+      record_transaction($pdo, 'Retract', 'schedule', 'Retracted the approval of ' . $list . ' (' . $term . '). Reason: ' . mb_substr($note, 0, 180));
       break;
     }
     case 'college_relock': {
@@ -877,9 +1186,15 @@ function college_action(PDO $pdo, array $body, string $action): array
           throw new RuntimeException($names[$cid] . ' has no unlocked published timetable to lock.');
         }
       }
+      $mineNow = load_workspace_copy($pdo, $termId, private_slot_for_actor('super_admin'));
+      $copies = [];
       foreach ($ids as $cid) {
+        if ($own = snapshot_for_college($mineNow, $cid)) {
+          $copies[$cid] = $own;
+        }
         save_college_row($pdo, $termId, $cid, ['status' => 'published', 'is_locked' => 1]);
       }
+      college_take_out_of_working($pdo, $termId, 'super_admin', $copies, 'locked again (your edits)');
       record_transaction($pdo, 'Lock', 'schedule', 'Locked ' . $list . ' (' . $term . ') again without changes.');
       break;
     }
@@ -899,6 +1214,7 @@ const COLLEGE_ACTIONS = [
   'college_vpaa_decide',
   'college_unlock',
   'college_relock',
+  'college_vpaa_retract',
 ];
 
 /** Older whole-campus approval actions; the per-college rows are rebuilt after them. */

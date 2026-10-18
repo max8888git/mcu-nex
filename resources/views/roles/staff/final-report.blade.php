@@ -8,6 +8,7 @@
 @endverbatim
   @fonts
   <x-legacy-css name="schedule-page" />
+  <x-legacy-css name="final-report" />
   <x-legacy-css name="app-header-sticky" />
   <x-legacy-css name="shell-responsive" />
   <x-legacy-css name="app-nav" />
@@ -69,7 +70,8 @@
       <x-app-nav-button />
 @verbatim
       <button type="button" class="topbar-tab active" data-ws-tab="final">Final report</button>
-      <button type="button" class="topbar-tab" data-ws-tab="awaiting">Awaiting the VPAA’s approval</button>
+      <a class="topbar-tab" href="finished-curriculums.html">Finished curriculums</a>
+      <a class="topbar-tab" href="past-terms.html">Past terms</a>
       <div class="topbar-datetime" id="topbar-datetime" aria-live="polite"></div>
     </div>
     </div>
@@ -83,17 +85,18 @@
 @endverbatim
 @if ($role === 'super-admin')
 @verbatim
-          <p class="page-sub" id="schedPageSub">This is the timetable after the VPAA approves it. Copies waiting for the VPAA live on the other tab. Filters only change what you see.</p>
+          <p class="page-sub" id="schedPageSub">The timetable the VPAA approved, for every college. What’s still waiting for the VPAA is in Create schedule → For approval. Filters only change what you see.</p>
 @endverbatim
 @else
 @verbatim
-          <p class="page-sub" id="schedPageSub">This is the timetable after the VPAA approves it. Pending VPAA copies live on the other tab. Filters only change what you see.</p>
+          <p class="page-sub" id="schedPageSub">The timetable the VPAA approved, for every college. What’s still waiting for the VPAA is in Create schedule → For approval. Filters only change what you see.</p>
 @endverbatim
 @endif
 @verbatim
         </header>
         <section class="card">
           <p class="sched-term-banner" id="schedTermBanner"></p>
+          <div class="fr-colleges" id="frColleges" aria-live="polite"></div>
           <p class="sched-workspace-hint" id="schedWorkspaceHint"></p>
           <div id="schedSavesPanel" hidden></div>
           <div id="schedWorkspace">
@@ -306,6 +309,7 @@
   <x-legacy-js name="sections-store" />
   <x-legacy-js name="data-boot" />
   <x-legacy-js name="schedule-page" />
+  <x-legacy-js name="final-report" />
   <x-legacy-js name="notifications" defer />
 @verbatim
 </body>

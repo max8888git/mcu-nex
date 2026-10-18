@@ -28,7 +28,9 @@
   var published = null;
   var bookingsLoaded = false;
   var bookingsFailed = false;
+  // `state` is what the list shows; `draft` is what the filters say until Show is pressed
   var state = { day: '', start: '', end: '', bldg: '', type: '', seats: '', booked: false, repair: false };
+  var draft = {};
 
   function $(id) { return doc.getElementById(id); }
 
@@ -187,6 +189,7 @@
   }
 
   function fillControls() {
+    draft = Object.assign({}, state);
     Array.prototype.forEach.call(doc.querySelectorAll('[data-rf-day]'), function (b) {
       b.setAttribute('aria-pressed', b.getAttribute('data-rf-day') === state.day ? 'true' : 'false');
     });
@@ -217,13 +220,21 @@
     $('rfShowRepair').checked = state.repair;
   }
 
-  function window_() {
-    var s = toMin(state.start);
-    var e = toMin(state.end);
+  function window_(f) {
+    f = f || state;
+    var s = toMin(f.start);
+    var e = toMin(f.end);
     if (s == null && e == null) return null;
     if (s == null) s = OPEN;
     if (e == null) e = CLOSE;
     return { start: s, end: e };
+  }
+
+  // "Admin Building 101" (several buildings have a 101); a room already named after its building keeps its name
+  function roomName(r) {
+    var code = String(r.code || '');
+    var bldg = String(r.building || '');
+    return bldg && code.toLowerCase().indexOf(bldg.toLowerCase()) !== 0 ? bldg + ' ' + code : code;
   }
 
   // ----- render -----
@@ -319,12 +330,12 @@
       if (ev.kind === 'partly') chip = ['ui-chip--neutral', ev.list.length + (ev.list.length === 1 ? ' class' : ' classes')];
       var meta = [r.building, r.floor != null ? 'Floor ' + r.floor : '', r.type, r.capacity != null ? r.capacity + ' seats' : 'Seats not set'].filter(Boolean);
       return '<li class="rf-card' + (ev.kind === 'booked' || ev.kind === 'repair' ? ' is-muted' : '') + '">' +
-        '<div class="rf-card-head"><h3 class="rf-room">Room ' + esc(r.code) + '</h3><span class="ui-chip ' + chip[0] + '">' + esc(chip[1]) + '</span></div>' +
-        '<p class="rf-meta">' + meta.map(esc).join(' · ') + '</p>' +
+        '<div class="rf-card-head"><h3 class="rf-room">' + esc(roomName(r)) + '</h3><span class="ui-chip ' + chip[0] + '">' + esc(chip[1]) + '</span></div>' +
+        '<p class="rf-meta">' + meta.slice(1).map(esc).join(' · ') + '</p>' +
         (r.college ? '<p class="rf-college">Reserved for ' + esc(r.college) + '</p>' : '') +
         timeline(r, win) +
         '<p class="rf-status rf-status--' + ev.kind + '">' + esc(describe(ev, win)) + '</p>' +
-        '<button type="button" class="ui-btn rf-view" data-rf-room="' + esc(r.key) + '">View week<span class="ui-sr"> for room ' + esc(r.code) + '</span></button>' +
+        '<button type="button" class="ui-btn rf-view" data-rf-room="' + esc(r.key) + '">View week<span class="ui-sr"> for ' + esc(roomName(r)) + '</span></button>' +
         '</li>';
     }).join('');
   }
@@ -357,7 +368,7 @@
     var room = rooms.filter(function (r) { return r.key === key; })[0];
     if (!room) return;
     var d = $('rfDialog');
-    $('rfDialogTitle').textContent = 'Room ' + room.code + ' · ' + room.building;
+    $('rfDialogTitle').textContent = roomName(room);
     $('rfDialogMeta').textContent = [room.floor != null ? 'Floor ' + room.floor : '', room.type, room.capacity != null ? room.capacity + ' seats' : '',
       room.college ? 'Reserved for ' + room.college : '', room.repair ? 'Under maintenance' : ''].filter(Boolean).join(' · ');
     $('rfWeek').innerHTML = DAYS.map(function (day) {
@@ -377,34 +388,88 @@
 
   // ----- wiring -----
 
-  function update(patch) {
-    for (var k in patch) if (Object.prototype.hasOwnProperty.call(patch, k)) state[k] = patch[k];
+  function changed() {
+    var keys = ['day', 'start', 'end', 'bldg', 'type', 'seats', 'booked', 'repair'];
+    return keys.some(function (k) { return String(draft[k]) !== String(state[k]); });
+  }
+
+  // the filters changed but the list doesn't show them yet
+  function markPending() {
+    var pending = changed();
+    $('rfShow').classList.toggle('is-pending', pending);
+    $('rfShow').textContent = pending ? 'Show results' : 'Show';
+    var win = window_(draft);
+    var bad = win && win.end <= win.start;
+    $('rfTimeError').hidden = !bad;
+    $('rfEnd').toggleAttribute('aria-invalid', !!bad);
+  }
+
+  function setDraft(patch) {
+    for (var k in patch) if (Object.prototype.hasOwnProperty.call(patch, k)) draft[k] = patch[k];
+    $('rfNowHint').hidden = true;
+    markPending();
+  }
+
+  function show() {
+    var win = window_(draft);
+    if (win && win.end <= win.start) {
+      markPending();
+      $('rfEnd').focus();
+      return;
+    }
+    state = Object.assign({}, draft);
     writeUrl();
     render();
+    markPending();
   }
 
   Array.prototype.forEach.call(doc.querySelectorAll('[data-rf-day]'), function (b) {
     b.addEventListener('click', function () {
       Array.prototype.forEach.call(doc.querySelectorAll('[data-rf-day]'), function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
-      update({ day: b.getAttribute('data-rf-day') });
+      setDraft({ day: b.getAttribute('data-rf-day') });
     });
   });
-  $('rfStart').addEventListener('change', function (e) { update({ start: e.target.value }); });
-  $('rfEnd').addEventListener('change', function (e) { update({ end: e.target.value }); });
-  $('rfBldg').addEventListener('change', function (e) { update({ bldg: e.target.value }); });
-  $('rfType').addEventListener('change', function (e) { update({ type: e.target.value }); });
-  $('rfSeats').addEventListener('input', function (e) { update({ seats: e.target.value.replace(/\D/g, '') }); });
-  $('rfShowBooked').addEventListener('change', function (e) { update({ booked: e.target.checked }); });
-  $('rfShowRepair').addEventListener('change', function (e) { update({ repair: e.target.checked }); });
+  $('rfStart').addEventListener('change', function (e) { setDraft({ start: e.target.value }); });
+  $('rfEnd').addEventListener('change', function (e) { setDraft({ end: e.target.value }); });
+  $('rfBldg').addEventListener('change', function (e) { setDraft({ bldg: e.target.value }); });
+  $('rfType').addEventListener('change', function (e) { setDraft({ type: e.target.value }); });
+  $('rfSeats').addEventListener('input', function (e) {
+    var clean = e.target.value.replace(/\D/g, '');
+    if (clean !== e.target.value) e.target.value = clean;
+    setDraft({ seats: clean });
+  });
+  $('rfSeats').addEventListener('keydown', function (e) { if (e.key === 'Enter') show(); });
+  $('rfShowBooked').addEventListener('change', function (e) { setDraft({ booked: e.target.checked }); });
+  $('rfShowRepair').addEventListener('change', function (e) { setDraft({ repair: e.target.checked }); });
+  $('rfShow').addEventListener('click', show);
+  // fills in today and the current hour (press Show to see it); outside class hours it says so instead
   $('rfNow').addEventListener('click', function () {
     var d = new Date();
-    var m = Math.max(OPEN, Math.min(CLOSE - 60, Math.floor((d.getHours() * 60 + d.getMinutes()) / 30) * 30));
-    update({ day: today(), start: hhmm(m), end: hhmm(m + 60) });
-    fillControls();
+    var hint = $('rfNowHint');
+    var nowMin = d.getHours() * 60 + d.getMinutes();
+    if (d.getDay() === 0 || nowMin < OPEN || nowMin >= CLOSE) {
+      hint.textContent = 'It’s outside class hours now (Monday to Saturday, ' + fmt(OPEN) + ' to ' + fmt(CLOSE) + '). Pick a day and time instead.';
+      hint.hidden = false;
+      return;
+    }
+    var start = Math.floor(nowMin / 30) * 30;
+    var end = Math.min(CLOSE, start + 60);
+    var day = today();
+    Array.prototype.forEach.call(doc.querySelectorAll('[data-rf-day]'), function (x) { x.setAttribute('aria-pressed', x.getAttribute('data-rf-day') === day ? 'true' : 'false'); });
+    $('rfStart').value = hhmm(start);
+    $('rfEnd').value = hhmm(end);
+    setDraft({ day: day, start: hhmm(start), end: hhmm(end) });
+    hint.textContent = 'Filled in ' + DAY_LONG[day] + ', ' + fmtRange(start, end) + '. Press Show to see the free rooms.';
+    hint.hidden = false;
   });
+  // start over: every filter back to the default, shown right away
   $('rfClear').addEventListener('click', function () {
-    update({ start: '', end: '', bldg: '', type: '', seats: '', booked: false, repair: false });
+    state = Object.assign({}, state, { start: '', end: '', bldg: '', type: '', seats: '', booked: false, repair: false });
+    writeUrl();
     fillControls();
+    render();
+    $('rfNowHint').hidden = true;
+    markPending();
   });
   $('rfResults').addEventListener('click', function (e) {
     var b = e.target.closest && e.target.closest('[data-rf-room]');
@@ -420,6 +485,7 @@
     loadRooms();
     fillControls();
     render();
+    markPending();
     return loadBookings();
   }).then(function () {
     renderTermNote();

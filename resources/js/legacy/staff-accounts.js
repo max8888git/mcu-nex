@@ -7,6 +7,12 @@
  * and one of its departments. Editing an account asks for your own
  * password, as the server requires.
  *
+ * Passwords: a new account is invited by email ("Set up your account": they choose their own
+ * password, which also confirms the email). The backup, and "Give a new starting password" on
+ * Edit: Generate makes a starting password (mcu + 4 digits) to share privately; the person signs
+ * in with it once and must choose their own. Changed emails get a confirmation link (needed for
+ * "Forgot password?"); the list shows who hasn't confirmed or set up yet.
+ *
  * Colleges and departments come from OrgStore (org-store.js + data-boot.js).
  */
 (function (global) {
@@ -97,6 +103,47 @@
     return u.role === 'super_admin' ? doc.getElementById('amPage').getAttribute('data-actor') === 'super_admin' : roles.indexOf(u.role) !== -1;
   }
 
+  // account emails: confirmed or not (with "Send confirmation email"), and a starting password not changed yet
+  function emailState(u) {
+    var bits = [];
+    if (u.passwordPending) {
+      bits.push('<span class="am-mail am-mail--no">Invite sent, not set up yet</span>' +
+        (canEdit(u) && u.isActive ? '<button type="button" class="am-link" data-am-send="' + esc(u.id) + '">Resend invite</button>' : ''));
+      return '<span class="am-mailrow">' + bits.join('') + '</span>';
+    }
+    if (u.emailConfirmed) {
+      bits.push('<span class="am-mail am-mail--ok">Email confirmed</span>');
+    } else {
+      bits.push('<span class="am-mail am-mail--no">Email not confirmed</span>' +
+        (canEdit(u) && u.isActive ? '<button type="button" class="am-link" data-am-send="' + esc(u.id) + '">Send confirmation email</button>' : ''));
+    }
+    if (u.mustChangePassword) bits.push('<span class="am-mail am-mail--wait">Hasn’t chosen a password yet</span>');
+    return '<span class="am-mailrow">' + bits.join('') + '</span>';
+  }
+
+  // a starting password like "mcu4827": easy to read out, used once, then they choose their own
+  function generatePassword() {
+    var n = new Uint32Array(1);
+    (global.crypto || global.msCrypto).getRandomValues(n);
+    return 'mcu' + String(1000 + (n[0] % 9000));
+  }
+
+  function setStartPassword(value) {
+    f.pw.value = value;
+    f.pw2.value = value;
+    doc.getElementById('amCopy').hidden = !value;
+    doc.getElementById('amClearPw').hidden = !value || !editing;
+    doc.getElementById('amGenerate').textContent = value ? 'Generate another' : (editing ? 'Give a new starting password' : 'Generate');
+    setError(f.pw, '');
+  }
+
+  function useStart(on) {
+    doc.getElementById('amInviteRow').hidden = on;
+    doc.getElementById('amStartRow').hidden = !on;
+    if (on && !editing && !f.pw.value) setStartPassword(generatePassword());
+    if (!on) setStartPassword('');
+  }
+
   function renderCounts() {
     var c = { active: 0, inactive: 0, all: users.length };
     users.forEach(function (u) { c[u.isActive ? 'active' : 'inactive']++; });
@@ -120,7 +167,7 @@
       rows.map(function (u) {
         return '<tr>' +
           '<td><div class="am-person"><span class="am-avatar" aria-hidden="true">' + esc(initials(u.name)) + '</span>' +
-            '<span><span class="am-name">' + esc(u.name) + '</span><span class="am-email" title="' + esc(u.email) + '">' + esc(u.email) + '</span></span></div></td>' +
+            '<span><span class="am-name">' + esc(u.name) + '</span><span class="am-email" title="' + esc(u.email) + '">' + esc(u.email) + '</span>' + emailState(u) + '</span></div></td>' +
           '<td data-label="Role"><span class="ui-tag">' + esc(u.roleLabel || ROLE_LABEL[u.role] || u.role) + '</span></td>' +
           '<td data-label="College / department" class="am-scope">' + (u.scopeLabel ? esc(u.scopeLabel) : '<span class="am-none">All colleges</span>') + '</td>' +
           '<td data-label="Status"><span class="ui-chip ' + (u.isActive ? 'ui-chip--done">Active' : 'ui-chip--neutral">Inactive') + '</span></td>' +
@@ -201,11 +248,13 @@
       f.email.value = editing.email || '';
       f.active.checked = !!editing.isActive;
     }
-    f.pwLabel.textContent = isEdit ? 'New password' : 'Password';
+    f.pwLabel.textContent = 'Starting password';
     f.pwHint.textContent = isEdit
-      ? 'Leave blank to keep their current password. At least 5 characters.'
-      : 'At least 5 characters. Share it with them privately; they can change it after logging in.';
-    f.pw.required = !isEdit;
+      ? 'Only if they can’t get in: give them a new starting password. They sign in with it once, then choose their own.'
+      : 'Share it with them privately. They sign in with it once, then choose their own password. We still email them a link to confirm their email.';
+    setStartPassword('');
+    // new accounts: an invite by default; a starting password only if their email doesn't work
+    useStart(isEdit);
     f.activeRow.hidden = !isEdit;
     f.confirmRow.hidden = !isEdit;
     syncActiveText();
@@ -235,11 +284,7 @@
     if (role === 'program_chair' && f.college.value && !f.dept.value) {
       bad(f.dept, f.dept.disabled ? 'This college has no departments. Choose another college or make this account a Dean.' : 'Choose their department.');
     }
-    var pw = f.pw.value;
-    if (!editing || pw) {
-      if (pw.length < 5) bad(f.pw, editing ? 'Use at least 5 characters, or leave it blank.' : 'Use at least 5 characters.');
-      else if (pw !== f.pw2.value) bad(f.pw2, 'The passwords don’t match.');
-    }
+    if (!editing && !doc.getElementById('amStartRow').hidden && !f.pw.value) bad(f.pw, 'Generate a starting password.');
     if (editing && !f.confirm.value) bad(f.confirm, 'Enter your password to save these changes.');
     if (!ok) {
       var first = form.querySelector('[aria-invalid="true"]');
@@ -268,13 +313,13 @@
     f.formError.hidden = false;
   }
 
-  function notice(text) {
+  function notice(text, bad) {
     var el = doc.createElement('div');
-    el.className = 'ui-notice';
+    el.className = 'ui-notice' + (bad ? ' ui-notice--bad' : '');
     el.setAttribute('role', 'status');
     el.textContent = text;
     doc.body.appendChild(el);
-    setTimeout(function () { el.remove(); }, 3500);
+    setTimeout(function () { el.remove(); }, bad ? 8000 : 4500);
   }
 
   function submit(e) {
@@ -306,7 +351,9 @@
         var wasEdit = !!editing;
         dialog.close();
         render();
-        notice(wasEdit ? 'Changes to ' + name + ' saved.' : 'Account created for ' + name + '.');
+        var text = wasEdit ? 'Changes to ' + name + ' saved.' : 'Account created for ' + name + '.';
+        if (res.mail) text += ' ' + res.mail.message;
+        notice(text, res.mail && !res.mail.sent);
       })
       .catch(function (err) { placeServerError(err && err.message); })
       .then(function () { f.save.disabled = false; });
@@ -344,7 +391,28 @@
   doc.getElementById('amSearch').addEventListener('input', function (e) { query = e.target.value; render(); });
   doc.getElementById('amRoleFilter').addEventListener('change', function (e) { roleFilter = e.target.value; render(); });
   doc.getElementById('amAdd').addEventListener('click', function () { openForm(null); });
+  doc.getElementById('amGenerate').addEventListener('click', function () { setStartPassword(generatePassword()); });
+  doc.getElementById('amUseStart').addEventListener('click', function () { useStart(true); });
+  doc.getElementById('amClearPw').addEventListener('click', function () { setStartPassword(''); });
+  doc.getElementById('amCopy').addEventListener('click', function () {
+    var btn = this;
+    var copied = function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1500); };
+    if (global.navigator.clipboard) global.navigator.clipboard.writeText(f.pw.value).then(copied, function () { f.pw.select(); });
+    else { f.pw.select(); doc.execCommand('copy'); copied(); }
+  });
   list.addEventListener('click', function (e) {
+    var send = e.target.closest('[data-am-send]');
+    if (send) {
+      send.disabled = true;
+      global.McuApi.send('POST', 'users.php', { action: 'send_confirmation', id: send.getAttribute('data-am-send') })
+        .then(function (res) {
+          if (res.users) users = res.users;
+          render();
+          notice(res.mail ? res.mail.message : 'Sent.');
+        })
+        .catch(function (err) { send.disabled = false; notice((err && err.message) || 'That didn’t send.', true); });
+      return;
+    }
     var b = e.target.closest && e.target.closest('[data-am-edit]');
     if (!b) return;
     var id = b.getAttribute('data-am-edit');
@@ -372,7 +440,9 @@
   });
   dialog.addEventListener('click', function (e) { if (e.target === dialog) dialog.close(); });
   dialog.addEventListener('close', function () {
-    [f.pw, f.pw2, f.confirm].forEach(function (i) { i.value = ''; i.type = 'password'; });
+    setStartPassword('');
+    f.confirm.value = '';
+    f.confirm.type = 'password';
     Array.prototype.forEach.call(doc.querySelectorAll('[data-am-reveal]'), function (b) { b.textContent = 'Show'; b.setAttribute('aria-pressed', 'false'); });
   });
 

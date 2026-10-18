@@ -1,0 +1,120 @@
+/* The VPAA's college boxes and the timetable pop-up (vpaa-board.js); tables reuse college-timetable.css */
+
+.vb-card {
+  padding: 1.2rem 1.35rem 1.4rem;
+  border: 1px solid var(--ui-line);
+  border-radius: 1rem;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(45, 22, 63, 0.05);
+}
+.vb-loading, .vb-muted { color: var(--ui-muted); font-size: 0.86rem; }
+.vb-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 0.6rem 1rem; margin-bottom: 0.9rem; }
+.vb-kicker { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #a16207; }
+.vb-title { margin-top: 0.15rem; font-size: 1.3rem; font-weight: 700; color: var(--ui-purple-dark); }
+.vb-sub { margin: 1.4rem 0 0.6rem; font-size: 0.95rem; font-weight: 700; color: var(--ui-purple-dark); }
+.vb-lead { margin-bottom: 0.8rem; font-size: 0.88rem; color: var(--ui-muted); line-height: 1.5; }
+.vb-foot { margin-top: 1.2rem; }
+.vb-foot a { color: var(--ui-purple); font-weight: 600; }
+.vb-field { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.78rem; font-weight: 600; color: var(--ui-muted); }
+.vb-field .ui-input { min-width: 14rem; }
+.vb-empty { margin-top: 0.5rem; }
+
+.vb-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+  margin-bottom: 0.9rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 0.75rem;
+  background: #fffbeb;
+  color: #78350f;
+  font-size: 0.88rem;
+}
+.vb-bar-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+
+.vb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); gap: 0.9rem; }
+.vb-grid--small { grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); }
+.vb-box { position: relative; display: flex; border: 1px solid var(--ui-line); border-radius: 0.9rem; background: #fff; transition: border-color 0.15s, box-shadow 0.15s; }
+.vb-box:hover { border-color: #c9b4e3; box-shadow: 0 8px 22px rgba(45, 22, 63, 0.08); }
+.vb-box.is-picked { border-color: var(--ui-purple); box-shadow: 0 0 0 2px rgba(92, 38, 126, 0.18); }
+.vb-box--quiet { background: #fbfafc; }
+.vb-box--quiet:hover { border-color: var(--ui-line); box-shadow: none; }
+.vb-pick { position: absolute; top: 0.7rem; right: 0.7rem; z-index: 1; display: inline-flex; padding: 0.25rem; cursor: pointer; }
+.vb-pick input { width: 18px; height: 18px; accent-color: var(--ui-purple); cursor: pointer; }
+.vb-open {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 1rem 2.6rem 1rem 1.05rem;
+  border: none;
+  border-radius: 0.9rem;
+  background: none;
+  color: var(--ui-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.vb-open--static { cursor: default; padding-right: 1.05rem; }
+.vb-open:focus-visible { outline: 3px solid var(--ui-gold); outline-offset: 2px; }
+.vb-name { font-size: 1.02rem; font-weight: 700; color: var(--ui-purple-dark); }
+.vb-meta { font-size: 0.82rem; color: var(--ui-muted); }
+.vb-note { font-size: 0.8rem; color: #7f1d1d; line-height: 1.4; }
+.vb-cta { margin-top: auto; padding-top: 0.2rem; font-size: 0.84rem; font-weight: 700; color: var(--ui-purple); }
+
+.vb-dialog { width: min(980px, calc(100vw - 2rem)); }
+.vb-dialog .ui-dialog-body { max-height: 70vh; overflow: auto; }
+.vb-dialog-sub { margin-top: 0.15rem; font-size: 0.86rem; color: var(--ui-muted); }
+.vb-dialog-bar { margin-top: 0; }
+.vb-info { margin-bottom: 0.8rem; padding: 0.5rem 0.75rem; border-radius: 0.6rem; background: var(--ui-purple-soft); color: #4b3d5e; font-size: 0.86rem; }
+.vb-push { margin-right: auto; }
+.vb-step { margin-top: 1rem; padding: 0.8rem 0.95rem; border-radius: 0.75rem; font-size: 0.88rem; line-height: 1.5; }
+.vb-step p { margin: 0.2rem 0 0.6rem; }
+.vb-step--primary { background: #f0fdf4; color: #14532d; }
+.vb-step--danger { background: #fef2f2; color: #7f1d1d; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; }
+
+@media (max-width: 640px) {
+  .vb-card { padding: 1rem; }
+  .vb-field .ui-input { min-width: 0; width: 100%; }
+  .vb-field { flex: 1 1 100%; }
+}
+
+/* Dashboard: where every college is (a stepper per college) */
+.vb-track { list-style: none; display: flex; flex-direction: column; border: 1px solid var(--ui-line); border-radius: 0.85rem; overflow: hidden; }
+.vb-track-row { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(0, 2.2fr) auto; align-items: center; gap: 0.6rem 1rem; padding: 0.75rem 1rem; background: #fff; }
+.vb-track-row + .vb-track-row { border-top: 1px solid #f1ecf6; }
+.vb-track-name { display: flex; flex-direction: column; gap: 0.15rem; color: var(--ui-purple-dark); }
+.vb-track-note { font-size: 0.78rem; color: var(--ui-muted); line-height: 1.4; }
+.vb-steps { list-style: none; display: flex; align-items: flex-start; }
+.vb-step { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; text-align: center; }
+.vb-step::before { content: ''; position: absolute; top: 0.8rem; left: -50%; width: 100%; height: 2px; background: var(--ui-line); z-index: 0; }
+.vb-step:first-child::before { display: none; }
+.vb-step.is-done::before, .vb-step.is-current::before { background: var(--ui-purple); }
+.vb-dot { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; width: 1.6rem; height: 1.6rem; border: 2px solid var(--ui-line); border-radius: 50%; background: #fff; color: var(--ui-muted); font-size: 0.75rem; font-weight: 700; }
+.vb-step.is-done .vb-dot { border-color: var(--ui-purple); background: var(--ui-purple); color: #fff; }
+.vb-step.is-current .vb-dot { border-color: var(--ui-gold); box-shadow: 0 0 0 3px rgba(249, 185, 55, 0.3); color: var(--ui-purple-dark); }
+.vb-step.is-done.is-current .vb-dot { border-color: #16a34a; background: #16a34a; color: #fff; box-shadow: none; }
+.vb-step-label { font-size: 0.72rem; color: var(--ui-muted); line-height: 1.2; }
+.vb-step.is-current .vb-step-label { font-weight: 700; color: var(--ui-purple-dark); }
+.vb-link { padding: 0; border: none; background: none; color: var(--ui-purple); font: inherit; font-size: 0.85rem; font-weight: 700; white-space: nowrap; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+
+/* Approved schedules: a table */
+.vb-table-wrap { overflow-x: auto; border: 1px solid var(--ui-line); border-radius: 0.85rem; }
+.vb-table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: 0.88rem; }
+.vb-table th, .vb-table td { padding: 0.7rem 0.9rem; border-top: 1px solid #f1ecf6; text-align: left; vertical-align: middle; }
+.vb-table thead th { border-top: none; background: #faf8fc; color: #4b3d5e; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.vb-table td strong { color: var(--ui-purple-dark); }
+.vb-num { text-align: right !important; }
+.vb-cellnote { display: block; margin-top: 0.25rem; font-size: 0.78rem; color: var(--ui-muted); }
+.vb-actions { white-space: nowrap; text-align: right !important; }
+.vb-actions .ui-btn { min-height: 34px; padding: 0.3rem 0.8rem; font-size: 0.84rem; }
+.vb-actions .ui-btn + .ui-btn { margin-left: 0.4rem; }
+
+@media (max-width: 760px) {
+  .vb-track-row { grid-template-columns: 1fr; }
+  .vb-track-act { justify-self: start; }
+}

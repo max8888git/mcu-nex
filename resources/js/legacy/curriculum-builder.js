@@ -79,24 +79,54 @@
   }
 
   var OPEN = ['draft', 'pending_dean', 'dean_approved', 'pending_registrar'];
+  var ON_THE_WAY = ['pending_dean', 'dean_approved', 'pending_registrar'];
 
-  // the version in progress (the Program Chair's, or whatever was already sent)
-  function openVersionOf(p) {
-    return (p.versions || []).filter(function (v) { return OPEN.indexOf(v.status) >= 0 && !v.deanDraft; })[0] || null;
+  // the one version already sent on (to the Dean, approved, or with the Registrar)
+  function onTheWayOf(p) {
+    return (p.versions || []).filter(function (v) { return ON_THE_WAY.indexOf(v.status) >= 0; })[0] || null;
   }
 
-  // the Dean's own draft, kept beside it
-  function deanDraftOf(p) {
-    return (p.versions || []).filter(function (v) { return v.deanDraft; })[0] || null;
+  // the drafts this person works on: a Program Chair's own; a Dean's own, plus ones the Registrar sent back or asked to revise
+  function draftsOf(p) {
+    return (p.versions || []).filter(function (v) {
+      if (v.status !== 'draft') return false;
+      return state.role !== 'dean' || v.madeByDean || !p.hasDepartments || v.lastReturnFrom === 'registrar' || !!v.revisionOf;
+    });
   }
 
   function onTheWay(v) {
-    return v && ['pending_dean', 'dean_approved', 'pending_registrar'].indexOf(v.status) >= 0;
+    return v && ON_THE_WAY.indexOf(v.status) >= 0;
   }
 
   function versionLine(v) {
-    return '<div class="cb-current">' + chip(v.status) + '<span>Version ' + v.version + ' · ' + esc(v.academicYear) + ' · ' + v.courseCount + ' subjects' +
+    return '<div class="cb-current">' + chip(v.status) + '<span><strong>' + esc(v.name) + '</strong> · Version ' + v.version + ' · ' + esc(v.academicYear) + ' · ' + v.courseCount + (v.courseCount === 1 ? ' subject' : ' subjects') +
       (v.updatedAt ? ' · updated ' + esc(when(v.updatedAt)) : '') + '</span></div>';
+  }
+
+  function draftRow(p, v, way) {
+    var dean = state.role === 'dean';
+    var where = { pending_dean: dean ? 'waiting for your approval' : 'with the Dean', dean_approved: 'approved and ready for the Registrar', pending_registrar: 'with the Registrar' };
+    var why = way ? '“' + way.name + '” is ' + (where[way.status] || 'on its way') + '. Only one draft goes at a time.'
+      : !v.courseCount ? 'Add subjects first.' : '';
+    return '<li class="cb-draft">' +
+      '<div class="cb-draft-head"><strong class="cb-draft-name">' + esc(v.name) + '</strong>' +
+      (v.lastReturnFrom ? '<span class="ui-chip ui-chip--back">Sent back</span>' : '') + '</div>' +
+      '<span class="cb-muted">Version ' + v.version + ' · ' + esc(v.academicYear) + ' · ' + v.courseCount + (v.courseCount === 1 ? ' subject' : ' subjects') + (v.updatedAt ? ' · saved ' + esc(when(v.updatedAt)) : '') + '</span>' +
+      returnNote(v) +
+      '<div class="cb-draft-actions">' +
+      '<button type="button" class="ui-btn" data-open="' + esc(v.id) + '">Open</button>' +
+      '<button type="button" class="ui-btn" data-rename="' + esc(v.id) + '">Rename</button>' +
+      '<button type="button" class="ui-btn ui-btn--primary" data-send-draft="' + esc(v.id) + '"' + (why ? ' disabled title="' + esc(why) + '"' : '') + '>' +
+      (dean ? 'Send to Registrar' : 'Send to Dean') + '</button>' +
+      '</div>' + (why && way ? '<p class="cb-hint">' + esc(why) + '</p>' : '') + '</li>';
+  }
+
+  function findVersion(id) {
+    var out = null;
+    state.programs.forEach(function (p) {
+      (p.versions || []).forEach(function (v) { if (v.id === id) out = { p: p, v: v }; });
+    });
+    return out;
   }
 
   function renderList() {
@@ -104,60 +134,94 @@
     state.form = null;
     var dean = state.role === 'dean';
     var waiting = [];
-    var sendable = [];
+    var sendable = 0;
     state.programs.forEach(function (p) {
-      var v = openVersionOf(p);
-      if (!v) return;
-      if (dean && v.status === 'pending_dean') waiting.push({ p: p, v: v });
-      if (dean && ['dean_approved', 'pending_dean'].indexOf(v.status) >= 0) sendable.push({ p: p, v: v });
-    });
-    state.programs.forEach(function (p) {
-      var own = deanDraftOf(p);
-      if (dean && own && !onTheWay(openVersionOf(p))) sendable.push({ p: p, v: own });
+      var way = onTheWayOf(p);
+      if (dean && way && way.status === 'pending_dean') waiting.push(way);
+      if (dean && way && way.status !== 'pending_registrar') sendable++;
+      if (dean && !way && draftsOf(p).length) sendable++;
     });
     var html = '';
     var withChairs = state.programs.some(function (p) { return p.hasDepartments; });
     if (dean && withChairs) {
       html += '<div class="cb-strip"><div><strong>' + (waiting.length ? waiting.length + ' waiting for your approval' : 'Nothing waiting for your approval') + '</strong>' +
-        '<span>Approve or send back what your Program Chairs send, or make a curriculum yourself. Then send it to the Registrar.</span></div>' +
-        (sendable.length ? '<button type="button" class="ui-btn ui-btn--primary" data-bulk-send>Send to Registrar…</button>' : '') + '</div>';
-    } else if (dean && sendable.length) {
-      html += '<div class="cb-strip"><div><strong>Ready to send</strong><span>Send your curriculums to the Registrar, one at a time or together.</span></div>' +
+        '<span>Approve or send back what your Program Chairs send, or make your own drafts. Then send one to the Registrar.</span></div>' +
+        (sendable ? '<button type="button" class="ui-btn ui-btn--primary" data-bulk-send>Send to Registrar…</button>' : '') + '</div>';
+    } else if (dean && sendable) {
+      html += '<div class="cb-strip"><div><strong>Ready to send</strong><span>Pick the draft to send for each program, one at a time or several together.</span></div>' +
         '<button type="button" class="ui-btn ui-btn--primary" data-bulk-send>Send to Registrar…</button></div>';
     }
     var sub = doc.querySelector('.ui-page-sub');
-    if (sub && dean && !withChairs) sub.textContent = 'Make the curriculum for each program, check it, and send it to the Registrar. Once accepted it’s used for sectioning.';
+    if (sub && dean && !withChairs) sub.textContent = 'Make drafts of each program’s curriculum, then pick the one to send to the Registrar. Once accepted it’s used for sectioning.';
     if (!state.programs.length) {
       html += '<div class="ui-empty"><h3>No programs to show</h3><p>' + (state.role === 'program_chair'
         ? 'Your account isn’t linked to a department with programs yet. Ask the University Registrar to set it in Account management.'
         : 'Your college has no active programs yet.') + '</p></div>';
     }
     html += '<div class="cb-grid">' + state.programs.map(function (p) {
-      var v = openVersionOf(p);
-      var own = dean ? deanDraftOf(p) : null;
+      var way = onTheWayOf(p);
+      var drafts = draftsOf(p);
       var accepted = (p.versions || []).filter(function (x) { return x.status === 'accepted'; })[0];
-      var deanMakes = !p.hasDepartments;
-      // the Dean can always keep one draft of their own; the Program Chair works on one version at a time
-      var canStart = dean ? !own : (!v && p.hasDepartments);
+      var canStart = dean || p.hasDepartments;
       return '<article class="cb-card">' +
         '<div class="cb-card-head"><h3>' + esc(p.name) + '</h3><span class="cb-college">' + esc(p.collegeName) + '</span></div>' +
         '<p class="cb-live">' + ((p.live || []).length
           ? 'Active curriculum: ' + p.live.map(function (l) { return '<span class="ui-tag">' + esc(l.academicYear) + '</span>'; }).join(' ')
           : 'No active curriculum yet') + '</p>' +
-        (v ? (dean && p.hasDepartments && !v.madeByDean ? '<p class="cb-label">From the Program Chair</p>' : '') + versionLine(v) + returnNote(v) +
-          '<div class="cb-card-actions cb-main-actions"><button type="button" class="ui-btn ui-btn--primary" data-open="' + esc(v.id) + '">' + (dean && v.status === 'pending_dean' ? 'Check version ' : 'Open version ') + v.version + '</button></div>'
-          : accepted && !own ? '<div class="cb-current">' + chip('accepted') + '<span>Version ' + accepted.version + ' · ' + esc(accepted.academicYear) + '</span></div>' : '') +
-        (own ? '<div class="' + (p.hasDepartments ? 'cb-own' : 'cb-own cb-own--plain') + '">' + (p.hasDepartments ? '<p class="cb-label">Your own draft</p>' : '') + versionLine(own) + returnNote(own) +
-          (v && v.status === 'pending_dean' ? '<p class="cb-hint">If you approve the Program Chair’s version, that one goes to the Registrar. Your draft stays saved.</p>' : '') +
-          '<button type="button" class="ui-btn' + (p.hasDepartments ? '' : ' ui-btn--primary') + '" data-open="' + esc(own.id) + '">' + (p.hasDepartments ? 'Open your draft' : 'Open version ' + own.version) + '</button></div>' : '') +
-        (state.role === 'program_chair' && deanMakes ? '<p class="cb-hint">In this college the Dean makes the curriculum.</p>' : '') +
+        (way ? '<div class="cb-way"><p class="cb-label">' + (dean && p.hasDepartments && !way.madeByDean ? 'From the Program Chair' : 'Sent') + '</p>' + versionLine(way) + returnNote(way) +
+          '<div class="cb-card-actions cb-main-actions"><button type="button" class="ui-btn ui-btn--primary" data-open="' + esc(way.id) + '">' + (dean && way.status === 'pending_dean' ? 'Check it' : 'Open') + '</button></div>' +
+          (dean && way.status === 'pending_dean' && drafts.length ? '<p class="cb-hint">If you approve it, that one goes to the Registrar. Your drafts stay saved.</p>' : '') + '</div>' : '') +
+        (drafts.length ? '<div class="cb-drafts"><p class="cb-label">' + (dean && p.hasDepartments ? 'Your drafts' : 'Drafts') + ' (' + drafts.length + ')</p><ul>' +
+          drafts.map(function (v) { return draftRow(p, v, way); }).join('') + '</ul></div>' : '') +
+        (state.role === 'program_chair' && !p.hasDepartments ? '<p class="cb-hint">In this college the Dean makes the curriculum.</p>' : '') +
         '<div class="cb-card-actions">' +
-        (canStart ? '<button type="button" class="ui-btn' + (v ? '' : ' ui-btn--primary') + '" data-start="' + esc(p.id) + '">' +
-          (dean && v ? 'Start your own draft' : accepted || (p.live || []).length ? 'Make a new version' : 'Start a curriculum') + '</button>' : '') +
+        (canStart ? '<button type="button" class="ui-btn' + (drafts.length || way ? '' : ' ui-btn--primary') + '" data-start="' + esc(p.id) + '">' +
+          (drafts.length || way ? '+ New draft' : accepted || (p.live || []).length ? 'Make a new version' : 'Start a curriculum') + '</button>' : '') +
         (accepted ? '<button type="button" class="ui-btn" data-open="' + esc(accepted.id) + '">View accepted</button>' : '') +
         '</div></article>';
     }).join('') + '</div>';
     root.innerHTML = html;
+  }
+
+  function renameDialog(id, current, done) {
+    var d = ensureDialog('cbRename', 'cb-dialog');
+    d.innerHTML = '<div class="ui-dialog-head"><h2 class="ui-dialog-title">Rename draft</h2><button type="button" class="ui-icon-btn" data-close aria-label="Close">&times;</button></div>' +
+      '<div class="ui-dialog-body"><label class="ui-field-label" for="cbRenameText">Name</label>' +
+      '<input class="ui-input" id="cbRenameText" maxlength="80" value="' + esc(current) + '">' +
+      '<p class="ui-field-hint">Something that tells your drafts apart, like “With new electives”.</p><p class="ui-field-error" id="cbRenameErr" role="alert" hidden></p></div>' +
+      '<div class="ui-dialog-foot"><button type="button" class="ui-btn" data-close>Cancel</button><button type="button" class="ui-btn ui-btn--primary" id="cbRenameGo">Save name</button></div>';
+    d.showModal();
+    var input = doc.getElementById('cbRenameText');
+    input.select();
+    var go = function () {
+      var err = doc.getElementById('cbRenameErr');
+      api({ action: 'rename', id: id, name: input.value.trim() }).then(function (res) {
+        d.close();
+        notice('Renamed.');
+        done(res.review);
+      }).catch(function (e) {
+        err.textContent = e.message;
+        err.hidden = false;
+      });
+    };
+    doc.getElementById('cbRenameGo').onclick = go;
+    input.onkeydown = function (e) { if (e.key === 'Enter') go(); };
+  }
+
+  // send one draft on from the program list
+  function sendDraft(id) {
+    var found = findVersion(id);
+    if (!found) return;
+    var v = found.v;
+    var dean = state.role === 'dean';
+    confirmBox(dean ? 'Send to the Registrar?' : 'Send to the Dean?',
+      '“' + v.name + '” (version ' + v.version + ') of ' + found.p.name + ' goes to ' + (dean ? 'the Records Officer and the University Registrar' : 'the Dean') +
+      '. Your other drafts stay saved. You can’t edit this one while it’s with them.', dean ? 'Send to Registrar' : 'Send to Dean', function () {
+        return api(dean ? { action: 'send_to_registrar', ids: [id] } : { action: 'send_to_dean', id: id }).then(function () {
+          notice(dean ? 'Sent to the Registrar.' : 'Sent to the Dean.');
+          return load().then(renderList);
+        });
+      });
   }
 
   // ---------------------------------------------------------------- start a version
@@ -199,18 +263,22 @@
     var p = state.programs.filter(function (x) { return x.id === programId; })[0];
     if (!p) return;
     var d = ensureDialog('cbStart', 'cb-dialog');
-    var last = (p.versions || [])[0];
+    var copies = (p.versions || []).filter(function (v) { return v.courseCount > 0; });
     d.innerHTML = '<div class="ui-dialog-head"><h2 class="ui-dialog-title">' + ((p.live || []).length ? 'Make a new version: ' : 'Start a curriculum: ') + esc(p.name) + '</h2>' +
       '<button type="button" class="ui-icon-btn" data-close aria-label="Close">&times;</button></div>' +
       '<div class="ui-dialog-body">' +
       '<label class="ui-field-label" for="cbYear">Effective school year</label>' +
       '<input class="ui-input" id="cbYear" value="' + esc(nextYear(p)) + '" placeholder="2027-2028" inputmode="numeric">' +
       '<p class="ui-field-hint">The first school year students follow this curriculum.</p>' +
+      '<label class="ui-field-label" for="cbName">Name of this draft</label>' +
+      '<input class="ui-input" id="cbName" maxlength="80" placeholder="Draft ' + (((p.versions || [])[0] || { version: 0 }).version + 1) + '">' +
+      '<p class="ui-field-hint">So you can tell your drafts apart, like “With new electives”. You can rename it later.</p>' +
       '<fieldset class="cb-from"><legend class="ui-field-label">Start from</legend>' +
       '<label><input type="radio" name="cbFrom" value="blank" checked> A blank form</label>' +
       ((p.live || []).length ? '<label><input type="radio" name="cbFrom" value="live"> A copy of the active curriculum <select class="ui-input cb-inline" id="cbLive">' +
         p.live.map(function (l) { return '<option value="' + esc(l.id) + '">' + esc(l.academicYear) + '</option>'; }).join('') + '</select></label>' : '') +
-      (last ? '<label><input type="radio" name="cbFrom" value="version"> A copy of version ' + last.version + ' (' + esc(F.statusText(last.status)) + ')</label>' : '') +
+      (copies.length ? '<label><input type="radio" name="cbFrom" value="version"> A copy of <select class="ui-input cb-inline" id="cbVersion">' +
+        copies.map(function (v) { return '<option value="' + esc(v.id) + '">' + esc(v.name + ' · version ' + v.version + ' · ' + F.statusText(v.status)) + '</option>'; }).join('') + '</select></label>' : '') +
       '<label><input type="radio" name="cbFrom" value="import"> A file (Excel or CSV) <input type="file" id="cbFile" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>' +
       '</fieldset>' + csvHelpHtml() + '<p class="ui-field-error" id="cbStartErr" role="alert" hidden></p></div>' +
       '<div class="ui-dialog-foot"><button type="button" class="ui-btn" data-close>Cancel</button><button type="button" class="ui-btn ui-btn--primary" id="cbStartGo">Start</button></div>';
@@ -218,7 +286,7 @@
     doc.getElementById('cbStartGo').onclick = function () {
       var err = doc.getElementById('cbStartErr');
       var from = (d.querySelector('input[name="cbFrom"]:checked') || {}).value || 'blank';
-      var body = { action: 'create', programId: p.id, academicYear: doc.getElementById('cbYear').value.trim(), from: from };
+      var body = { action: 'create', programId: p.id, academicYear: doc.getElementById('cbYear').value.trim(), from: from, name: doc.getElementById('cbName').value.trim() };
       var go = function () {
         api(body).then(function (res) {
           d.close();
@@ -229,7 +297,7 @@
         });
       };
       if (from === 'live') body.sourceId = doc.getElementById('cbLive').value;
-      if (from === 'version') body.sourceId = last.id;
+      if (from === 'version') body.sourceId = doc.getElementById('cbVersion').value;
       if (from === 'import') {
         var file = doc.getElementById('cbFile').files[0];
         if (!file) {
@@ -308,7 +376,9 @@
     var others = otherVersions(r);
     root.innerHTML =
       '<button type="button" class="cb-back" data-back>&larr; All programs</button>' +
-      '<div class="cb-head"><div><h2>' + esc(r.programName) + '</h2><p>' + esc(r.collegeName) + ' · Version ' + r.version + ' · ' +
+      '<div class="cb-head"><div><h2>' + esc(r.programName) + '</h2>' +
+      '<p class="cb-draftname"><strong>' + esc(r.name) + '</strong>' + (can.rename ? ' <button type="button" class="cs-linkbtn" data-rename="' + esc(r.id) + '">Rename</button>' : '') + '</p>' +
+      '<p>' + esc(r.collegeName) + ' · Version ' + r.version + ' · ' +
       (state.editing ? '<label class="cb-year">Effective <input class="ui-input" id="cbYearEdit" value="' + esc(r.academicYear) + '"></label>' : esc(r.academicYear)) + '</p></div>' +
       '<div class="cb-head-side">' + chip(r.status) + '</div></div>' +
       returnNote(r) + ownershipNote(r) +
@@ -363,7 +433,7 @@
   }
 
   function versionLabel(h) {
-    return 'Version ' + h.version + ' · ' + h.academicYear + ' · ' + F.statusText(h.status) + (h.deanDraft && state.role === 'dean' ? ' (your draft)' : '');
+    return h.name + ' · version ' + h.version + ' · ' + F.statusText(h.status) + (h.deanDraft && state.role === 'dean' ? ' (your draft)' : '');
   }
 
   function versionCourses(id) {
@@ -382,9 +452,9 @@
     if (!others.length) return;
     F.compareDialog({
       title: 'Compare ' + r.programName + ' versions',
-      nowLabel: 'version ' + r.version + (r.deanDraft && state.role === 'dean' ? ' (your draft)' : ''),
+      nowLabel: '“' + r.name + '”',
       courses: state.form ? state.form.courses() : r.courses,
-      choices: others.map(function (h) { return { id: h.id, label: versionLabel(h), short: 'version ' + h.version + (h.deanDraft && state.role === 'dean' ? ' (your draft)' : '') }; }),
+      choices: others.map(function (h) { return { id: h.id, label: versionLabel(h), short: '“' + h.name + '”' }; }),
       pick: withId || defaultOther(r, others),
       load: versionCourses
     });
@@ -410,13 +480,13 @@
     if (state.role !== 'dean' || !r.hasDepartments) return '';
     var own = (r.history || []).filter(function (h) { return h.deanDraft && h.id !== r.id; })[0];
     if (r.deanDraft) {
-      var main = (r.history || []).filter(function (h) { return OPEN.indexOf(h.status) >= 0 && !h.deanDraft; })[0];
+      var main = (r.history || []).filter(function (h) { return ON_THE_WAY.indexOf(h.status) >= 0; })[0];
       return '<p class="cb-info">This is your own draft. It’s saved as you work.' +
-        (main ? ' The Program Chair’s version ' + main.version + ' (' + esc(main.status === 'pending_dean' ? 'waiting for your approval' : F.statusText(main.status).toLowerCase()) + ') is the one in progress; only one version goes to the Registrar at a time.' : '') + '</p>';
+        (main ? ' Version ' + main.version + ' (' + esc(main.status === 'pending_dean' ? 'waiting for your approval' : F.statusText(main.status).toLowerCase()) + ') is already on its way; only one version goes to the Registrar at a time.' : '') + '</p>';
     }
     if (own && r.status === 'pending_dean') {
-      return '<p class="cb-info">If you approve this, it’s the version you send to the Registrar. Your own draft (version ' + own.version + ') stays saved. ' +
-        '<button type="button" class="cs-linkbtn" data-compare="' + esc(own.id) + '">Compare with your draft</button></p>';
+      return '<p class="cb-info">If you approve this, it’s the version you send to the Registrar. Your drafts stay saved. ' +
+        '<button type="button" class="cs-linkbtn" data-compare="' + esc(own.id) + '">Compare with “' + esc(own.name) + '”</button></p>';
     }
     return '';
   }
@@ -613,19 +683,24 @@
   function openBulkSend() {
     var items = [];
     state.programs.forEach(function (p) {
-      var v = openVersionOf(p);
-      var own = deanDraftOf(p);
-      if (v && ['dean_approved', 'pending_dean'].indexOf(v.status) >= 0) items.push({ p: p, v: v });
-      else if (own && !onTheWay(v)) items.push({ p: p, v: own });
+      var way = onTheWayOf(p);
+      if (way && way.status !== 'pending_registrar') items.push({ p: p, v: way });
+      else if (!way) draftsOf(p).forEach(function (v) { if (v.courseCount) items.push({ p: p, v: v }); });
     });
     var d = ensureDialog('cbBulk', 'cb-dialog');
     d.innerHTML = '<div class="ui-dialog-head"><h2 class="ui-dialog-title">Send to the Registrar</h2><button type="button" class="ui-icon-btn" data-close aria-label="Close">&times;</button></div>' +
-      '<div class="ui-dialog-body"><p class="cs-dialog-msg">Tick the curriculums to send. Sending one that’s still waiting for you also approves it.</p><ul class="cs-submit-list">' +
+      '<div class="ui-dialog-body"><p class="cs-dialog-msg">Tick what to send, one per program. Sending one that’s still waiting for you also approves it.</p><ul class="cs-submit-list">' +
       items.map(function (x) {
-        return '<li><label><input type="checkbox" data-bulk="' + esc(x.v.id) + '"' + (x.v.status === 'dean_approved' ? ' checked' : '') + '><span class="cs-submit-name"><strong>' + esc(x.p.name) + '</strong><span>Version ' + x.v.version + ' · ' + esc(x.v.academicYear) + ' · ' + esc(F.statusText(x.v.status)) + '</span></span></label></li>';
+        return '<li><label><input type="checkbox" data-bulk="' + esc(x.v.id) + '" data-prog="' + esc(x.p.id) + '"' + (x.v.status === 'dean_approved' ? ' checked' : '') + '><span class="cs-submit-name"><strong>' + esc(x.p.name) + ' · ' + esc(x.v.name) + '</strong><span>Version ' + x.v.version + ' · ' + esc(x.v.academicYear) + ' · ' + esc(F.statusText(x.v.status)) + '</span></span></label></li>';
       }).join('') + '</ul><p class="ui-field-error" id="cbBulkErr" role="alert" hidden></p></div>' +
       '<div class="ui-dialog-foot"><button type="button" class="ui-btn" data-close>Cancel</button><button type="button" class="ui-btn ui-btn--primary" id="cbBulkGo">Send to Registrar</button></div>';
     d.showModal();
+    // one per program: ticking a draft unticks the program's others
+    d.onchange = function (e) {
+      var b = e.target;
+      if (!b.matches('[data-bulk]') || !b.checked) return;
+      d.querySelectorAll('[data-prog="' + b.getAttribute('data-prog') + '"]').forEach(function (o) { if (o !== b) o.checked = false; });
+    };
     doc.getElementById('cbBulkGo').onclick = function () {
       var ids = Array.prototype.filter.call(d.querySelectorAll('[data-bulk]'), function (b) { return b.checked; }).map(function (b) { return b.getAttribute('data-bulk'); });
       var err = doc.getElementById('cbBulkErr');
@@ -704,6 +779,20 @@
     }
     if ((el = t.closest('[data-goto]'))) return state.form && state.form.focusRow(Number(el.getAttribute('data-goto')));
     if ((el = t.closest('[data-compare]'))) return openCompare(el.getAttribute('data-compare'));
+    if ((el = t.closest('[data-send-draft]'))) return sendDraft(el.getAttribute('data-send-draft'));
+    if ((el = t.closest('[data-rename]'))) {
+      var rid = el.getAttribute('data-rename');
+      var cur = state.review && state.review.id === rid ? state.review : (findVersion(rid) || {}).v;
+      return renameDialog(rid, cur ? cur.name : '', function (fresh) {
+        if (state.review && state.review.id === rid) {
+          state.review.name = fresh.name;
+          var nameEl = root.querySelector('.cb-draftname strong');
+          if (nameEl) nameEl.textContent = fresh.name;
+          return;
+        }
+        load().then(renderList);
+      });
+    }
     if (t.closest('[data-copy-from]')) return openCopy();
     if ((el = t.closest('[data-do]'))) return onAction(el.getAttribute('data-do'));
     var copy = function () {

@@ -2,12 +2,14 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/term-rollover.php';
 
 function run_sections_request(): void
 {
 $pdo = db();
 ensure_retake_schema($pdo);
 ensure_term_archive_schema($pdo);
+ensure_term_rollover_schema($pdo);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($method === 'GET') {
@@ -19,7 +21,17 @@ if ($method === 'POST') {
   $action = (string) ($body['action'] ?? 'plan');
   try {
     $pdo->beginTransaction();
-    if ($action === 'setTerm') {
+    // Start next term (term-rollover.php): preview, create, undo
+    if ($action === 'nextTermPreview') {
+      $preview = rollover_preview($pdo, $body);
+      $pdo->rollBack();
+      json_ok(['preview' => $preview]);
+    }
+    if ($action === 'nextTermCreate') {
+      $saved = rollover_create($pdo, $body);
+    } elseif ($action === 'nextTermUndo') {
+      $saved = rollover_undo($pdo);
+    } elseif ($action === 'setTerm') {
       $saved = set_current_offering($pdo, $body);
     } elseif ($action === 'archiveTerm') {
       $saved = archive_offering($pdo, $body);
@@ -137,6 +149,8 @@ function sections_payload(PDO $pdo): array
       : null,
     'archivedTerms' => list_archived_offerings($pdo),
     'sections' => list_sections($pdo),
+    // the last Start next term, while it can still be undone
+    'rollover' => function_exists('rollover_undoable') ? rollover_undoable($pdo) : null,
   ];
 }
 

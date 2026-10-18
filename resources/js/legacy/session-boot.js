@@ -83,6 +83,11 @@
           go('index.html');
           return;
         }
+        // signed in with a starting password from the registrar: choose your own first
+        if (user.mustChangePassword) {
+          go('new-password.html');
+          return;
+        }
         applyChrome(user);
         var need = folderRole();
         if (need && need !== user.role && user.home) {

@@ -1281,12 +1281,14 @@ function request_class_choices(PDO $pdo): array
   $collegeId = (string) ($session['collegeId'] ?? '');
   $programIds = is_array($session['programIds'] ?? null) ? $session['programIds'] : [];
   $out = [];
-  foreach (published_schedule_classes($pdo) as $class) {
-    if (!is_array($class) || (string) ($class['collegeId'] ?? '') !== $collegeId) {
-      continue;
-    }
+  $classes = array_values(array_filter(published_schedule_classes($pdo), static fn ($c) => is_array($c) && (string) ($c['collegeId'] ?? '') === $collegeId));
+  // match classes to programs by name too: an approved copy can point at an older program row
+  if ($role === 'program_chair' && function_exists('college_tag_programs')) {
+    [$classes] = college_tag_programs($pdo, (int) (parse_id($collegeId, 'c') ?: 0), $classes);
+  }
+  foreach ($classes as $class) {
     if ($role === 'program_chair') {
-      $dept = (string) ($class['departmentId'] ?? '');
+      $dept = (string) ($class['programId'] ?? $class['departmentId'] ?? '');
       if ($dept === '' || !in_array($dept, $programIds, true)) {
         continue;
       }
@@ -1765,6 +1767,18 @@ function notification_href_for_role(string $role, string $page): string
   if ($page === 'college-timetable') {
     return $folder . '/dashboard.html';
   }
+  // the VPAA approves on the Dashboard boxes; approved ones are on Approved schedules (no Reports or Approval page)
+  if ($role === 'vpaa') {
+    return $folder . (strpos($page, 'ws=final') !== false ? '/approved-schedules.html' : '/dashboard.html');
+  }
+  // Deans and Program Chairs see this term's approved timetable on the Dashboard (no Reports)
+  if (in_array($role, ['dean', 'program_chair'], true) && ($page === 'final-report' || strpos($page, 'final-report') === 0)) {
+    return $folder . '/dashboard.html';
+  }
+  // the registrars: what waits for the VPAA is on Create schedule → For approval (Reports has no such tab)
+  if (in_array($role, ['admin', 'super_admin'], true) && strpos($page, 'final-report') === 0 && strpos($page, 'ws=awaiting') !== false) {
+    return $folder . '/create-schedule.html?ws=submitted';
+  }
   if ($page === 'final-report' || strpos($page, 'final-report') === 0) {
     $query = '';
     $qPos = strpos($page, '?');
@@ -1974,9 +1988,16 @@ function ensure_department_program_split(PDO $pdo): void
        FOREIGN KEY (department_id) REFERENCES departments(department_id) ON DELETE SET NULL'
     );
   }
+  // A college's own (direct) program has no department by design, and the college
+  // page clears the link on every save. Only programs that really need a department
+  // are migrated; otherwise every request would add another copy of the department.
+  $splitFilter = schema_column_exists($pdo, 'colleges', 'use_departments')
+    ? 'AND p.represents_college = 0
+       AND EXISTS (SELECT 1 FROM colleges c WHERE c.college_id = p.college_id AND c.use_departments = 1)'
+    : '';
   $pending = $pdo->query(
-    'SELECT program_id, college_id, program_code, program_name, is_active, archived_label
-     FROM programs WHERE department_id IS NULL'
+    "SELECT p.program_id, p.college_id, p.program_code, p.program_name, p.is_active, p.archived_label
+     FROM programs p WHERE p.department_id IS NULL $splitFilter"
   )->fetchAll();
   $insDept = $pdo->prepare(
     'INSERT INTO departments (college_id, department_code, department_name, archived_label, is_active)
@@ -2113,6 +2134,12 @@ function seed_demo_users(PDO $pdo): void
     foreach ($prog->fetchAll() as $p) {
       $chairPrograms[] = (int) $p['program_id'];
     }
+  }
+
+  // demo accounts only on a fresh install (no accounts yet); otherwise changing an account's
+  // email would bring the demo one back, with its well-known password
+  if ((int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn() > 0) {
+    return;
   }
 
   $demos = [
