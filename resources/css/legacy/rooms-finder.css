@@ -316,3 +316,9 @@
         gap: 0;
     }
 }
+
+/* Show applies the filters; "Use current time" fills them in */
+.rf-link { padding: 0.35rem 0.2rem; border: none; background: none; color: var(--ui-purple); font: inherit; font-size: 0.88rem; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.rf-link:hover { color: var(--ui-purple-dark); }
+#rfShow.is-pending { box-shadow: 0 0 0 3px rgba(249, 185, 55, 0.45); }
+.rf-now-hint { margin-top: 0.5rem; padding: 0.45rem 0.7rem; border-radius: 0.55rem; background: var(--ui-purple-soft); color: #4b3d5e; font-size: 0.86rem; }

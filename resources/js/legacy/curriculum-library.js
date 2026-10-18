@@ -3,7 +3,9 @@
  * every curriculum in the system, read-only. Pick one from the list (grouped by
  * college and program) to see it year by year. Curriculums are made by the Deans
  * and Program Chairs (curriculum-builder) and accepted on "From the colleges";
- * here the registrars can download, print, upload a CSV, and archive or restore.
+ * here the registrars can download and print; the University Registrar can upload a CSV
+ * (older curriculums from before the system). Curriculums aren't deleted here: the University
+ * Registrar archives and restores them in Reports → Finished curriculums.
  * Data: curricula.php (the live curricula / curriculum_courses tables).
  */
 (function (global) {
@@ -84,6 +86,11 @@
     });
   }
 
+  // the University Registrar (super-admin pages) uploads; the Records Officer only looks
+  function registrar() {
+    return !!root && root.getAttribute('data-role') === 'super-admin';
+  }
+
   function render() {
     var list = shown();
     if (!list.some(function (c) { return c.id === state.pick; })) state.pick = list[0] ? list[0].id : '';
@@ -102,7 +109,7 @@
       [['active', 'Active', counts.active], ['archived', 'Archived', counts.archived], ['all', 'All', state.list.length]].map(function (t) {
         return '<button type="button" class="ui-tab" role="tab" data-status="' + t[0] + '" aria-selected="' + (state.status === t[0]) + '">' + t[1] + ' <span class="ui-tab-count">' + t[2] + '</span></button>';
       }).join('') + '</div>' +
-      '<button type="button" class="ui-btn" id="clUpload">Upload CSV</button></div>';
+      (registrar() ? '<button type="button" class="ui-btn" id="clUpload">Upload CSV</button>' : '') + '</div>';
     if (!list.length) {
       html += '<div class="ui-empty"><h3>' + (state.list.length ? 'No curriculums match' : 'No curriculums yet') + '</h3><p>' +
         (state.list.length ? 'Try another search or show All.' : 'Curriculums the colleges send show on From the colleges; once accepted they’re listed here.') + '</p></div>';
@@ -132,9 +139,6 @@
     var c = state.list.filter(function (x) { return x.id === state.pick; })[0];
     if (!host || !c) return;
     var r = asReview(c);
-    var used = c.status === 'archived'
-      ? '<button type="button" class="ui-btn" data-restore>Restore</button><button type="button" class="ui-btn ui-btn--danger" data-delete>Delete</button>'
-      : '<button type="button" class="ui-btn" data-archive>Archive</button>';
     host.innerHTML =
       '<div class="cb-head"><div><h2>' + esc(c.departmentName) + '</h2><p>' + esc(c.collegeName) + ' · Effective ' + esc(c.academicYear) +
       ' · ' + r.courses.length + ' subjects, ' + units(c) + ' units</p>' +
@@ -142,8 +146,10 @@
       (c.updatedAt ? ' · updated ' + esc(when(c.updatedAt)) : '') + '</p></div>' +
       '<div class="cb-head-side">' + (c.status === 'archived' ? '<span class="ui-chip ui-chip--neutral">Archived</span>' : '<span class="ui-chip ui-chip--done">Active</span>') + '</div></div>' +
       '<div class="cb-toolbar"><span class="cb-muted">Read-only. The Deans and Program Chairs make changes and send a new version.</span><span class="cb-spacer"></span>' +
-      '<button type="button" class="ui-btn" data-csv>Download CSV</button><button type="button" class="ui-btn" data-pdf>Download PDF</button><button type="button" class="ui-btn" data-print>Print</button>' + used + '</div>' +
-      (c.status === 'archived' ? '<p class="cl-note">Archived: it isn’t offered when making sections. Restore it to use it again.</p>' : '') +
+      '<button type="button" class="ui-btn" data-csv>Download CSV</button><button type="button" class="ui-btn" data-pdf>Download PDF</button><button type="button" class="ui-btn" data-print>Print</button></div>' +
+      (c.status === 'archived'
+        ? '<p class="cl-note">Archived: it isn’t offered when making sections. ' + (registrar() ? 'To use it again, restore it in <a href="finished-curriculums.html">Reports → Finished curriculums</a>.' : 'The University Registrar can restore it in <a href="finished-curriculums.html">Reports → Finished curriculums</a>.') + '</p>'
+        : '<p class="cl-note cl-note--soft">No longer running? ' + (registrar() ? 'Archive it in <a href="finished-curriculums.html">Reports → Finished curriculums</a>, under “Not used this term”.' : 'The University Registrar archives finished curriculums in <a href="finished-curriculums.html">Reports → Finished curriculums</a>.') + '</p>') +
       '<div id="clForm" class="cf"></div>';
     F.mount(doc.getElementById('clForm'), { courses: r.courses, editable: false, roomTypes: [] });
   }
@@ -159,40 +165,6 @@
         }
       });
     }
-  }
-
-  function ask(title, message, yes, danger, go) {
-    var d = doc.getElementById('clAsk');
-    if (!d) {
-      d = doc.createElement('dialog');
-      d.id = 'clAsk';
-      d.className = 'ui-dialog cb-dialog';
-      doc.body.appendChild(d);
-      d.addEventListener('click', function (e) {
-        if (e.target.closest('[data-close]') || e.target === d) d.close();
-      });
-    }
-    d.innerHTML = '<div class="ui-dialog-head"><h2 class="ui-dialog-title">' + esc(title) + '</h2><button type="button" class="ui-icon-btn" data-close aria-label="Close">&times;</button></div>' +
-      '<div class="ui-dialog-body"><p>' + esc(message) + '</p><p class="ui-field-error" id="clAskErr" role="alert" hidden></p></div>' +
-      '<div class="ui-dialog-foot"><button type="button" class="ui-btn" data-close>Cancel</button><button type="button" class="ui-btn ' + (danger ? 'ui-btn--danger' : 'ui-btn--primary') + '" id="clAskGo">' + esc(yes) + '</button></div>';
-    d.showModal();
-    doc.getElementById('clAskGo').onclick = function () {
-      var b = this;
-      b.disabled = true;
-      go().then(function () { d.close(); }).catch(function (e) {
-        b.disabled = false;
-        var err = doc.getElementById('clAskErr');
-        err.textContent = e.message;
-        err.hidden = false;
-      });
-    };
-  }
-
-  function setStatus(c, status) {
-    return global.McuApi.send('PATCH', 'curricula.php', { id: c.id, status: status }).then(function () {
-      notice(status === 'archived' ? 'Archived.' : 'Restored.');
-      return load().then(render);
-    });
   }
 
   function onClick(e) {
@@ -219,22 +191,6 @@
     if (t.closest('[data-csv]')) return F.csv(asReview(c));
     if (t.closest('[data-print]')) return F.print(asReview(c));
     if (t.closest('[data-pdf]')) return F.pdf(asReview(c)).catch(function (er) { notice(er.message, 'bad'); });
-    if (t.closest('[data-archive]')) {
-      return ask('Archive this curriculum?', c.departmentName + ' ' + c.academicYear + ' won’t be offered when making new sections. Sections that already use it keep it. You can restore it later.', 'Archive', false,
-        function () { return setStatus(c, 'archived'); });
-    }
-    if (t.closest('[data-restore]')) {
-      return ask('Restore this curriculum?', c.departmentName + ' ' + c.academicYear + ' becomes active again and is offered when making sections.', 'Restore', false,
-        function () { return setStatus(c, 'active'); });
-    }
-    if (t.closest('[data-delete]')) {
-      return ask('Delete this curriculum?', c.departmentName + ' ' + c.academicYear + ' and its subjects will be deleted for good. This can’t be undone.', 'Delete', true, function () {
-        return global.McuApi.send('DELETE', 'curricula.php?id=' + encodeURIComponent(c.id)).then(function () {
-          notice('Deleted.');
-          return load().then(render);
-        });
-      });
-    }
   }
 
   function init() {

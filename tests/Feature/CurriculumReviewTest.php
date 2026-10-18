@@ -97,8 +97,13 @@ class CurriculumReviewTest extends TestCase
         $draft = $this->act('create', ['programId' => $cs, 'academicYear' => '2027-2028', 'from' => 'blank'])->assertOk()->json('review');
         $id = $draft['id'];
         $this->assertSame('draft', $draft['status']);
-        $this->act('create', ['programId' => $cs, 'academicYear' => '2027-2028'])
-            ->assertStatus(400)->assertJsonPath('error', 'A version of this curriculum is already in progress (version 1). Open that one instead.');
+        $this->assertSame('Draft 1', $draft['name']);
+        // several drafts, each with a name; renaming needs a name
+        $second = $this->act('create', ['programId' => $cs, 'academicYear' => '2027-2028', 'name' => '  With new   electives '])->assertOk()->json('review');
+        $this->assertSame('With new electives', $second['name']);
+        $this->act('rename', ['id' => $second['id'], 'name' => ' '])->assertStatus(400)->assertJsonPath('error', 'Give the draft a name.');
+        $this->act('rename', ['id' => $second['id'], 'name' => 'Old prerequisites'])->assertOk()->assertJsonPath('review.name', 'Old prerequisites');
+        $this->act('discard', ['id' => $second['id']])->assertOk();
 
         // checks: duplicate code, a separate "L" lab row, missing room type, prerequisite in a later term
         $bad = [
@@ -196,13 +201,16 @@ class CurriculumReviewTest extends TestCase
         $this->act('save', ['id' => $chairs, 'courses' => $good])->assertOk();
         $this->act('send_to_dean', ['id' => $chairs])->assertOk();
 
-        // the Dean starts their own draft while the Program Chair's waits; only one each
+        // the Dean makes drafts of their own while the Program Chair's waits (as many as they like)
         $this->as('dean');
-        $own = $this->act('create', ['programId' => $cs, 'academicYear' => '2027-2028'])->assertOk()->json('review');
+        $own = $this->act('create', ['programId' => $cs, 'academicYear' => '2027-2028', 'name' => 'Dean’s version'])->assertOk()->json('review');
         $this->assertTrue($own['deanDraft']);
-        $this->act('create', ['programId' => $cs, 'academicYear' => '2027-2028'])->assertStatus(400)
-            ->assertJsonPath('error', 'You already have a draft of this curriculum (version '.$own['version'].'). Open that one instead.');
+        $this->act('create', ['programId' => $cs, 'academicYear' => '2027-2028'])->assertOk()->assertJsonPath('review.deanDraft', true);
         $this->act('save', ['id' => $own['id'], 'courses' => $good])->assertOk();
+        // the Program Chair can't rename the Dean's draft
+        $this->as('program_chair');
+        $this->act('rename', ['id' => $own['id'], 'name' => 'Mine'])->assertStatus(400);
+        $this->as('dean');
         // only one version goes to the Registrar at a time
         $this->act('send_to_registrar', ['ids' => [$own['id']]])->assertStatus(400)
             ->assertJsonPath('error', 'Version 1 is waiting for your approval. Only one version goes to the Registrar at a time, so finish that one first.');
@@ -258,6 +266,33 @@ class CurriculumReviewTest extends TestCase
         $this->assertEquals(2, $again['courses'][1]['lab']);
         // approving clears the Dean's send-back record
         $this->act('dean_decide', ['id' => $id, 'accept' => true])->assertOk()->assertJsonPath('review.returned', null);
+    }
+
+    public function test_finished_curriculums_list_and_detail_for_the_registrars_only(): void
+    {
+        $get = function (string $q) {
+            $_SERVER['REQUEST_METHOD'] = 'GET';
+            parse_str($q, $_GET);
+
+            return $this->getJson('/api/curricula.php?'.$q);
+        };
+        $this->as('admin');
+        $list = $get('finished=1')->assertOk()->json();
+        $this->assertTrue($list['canArchive'], 'the Records Officer archives and restores; only the University Registrar deletes');
+        $this->assertFalse($list['canDelete']);
+        $this->assertArrayHasKey('archived', $list);
+        $this->assertArrayHasKey('notInUse', $list);
+        $this->as('super_admin');
+        $asRegistrar = $get('finished=1')->assertOk()->json();
+        $this->assertTrue($asRegistrar['canArchive']);
+        $this->assertTrue($asRegistrar['canDelete']);
+        $any = DB::table('curricula')->value('curriculum_id');
+        $detail = $get('finished_id=cur-'.$any)->assertOk()->json();
+        $this->assertSame('cur-'.$any, $detail['curriculum']['id']);
+        $this->assertIsArray($detail['terms']);
+        // nobody else
+        $this->as('dean');
+        $get('finished=1')->assertStatus(400);
     }
 
     public function test_registrar_send_back_needs_a_note_and_returns_it_to_the_college(): void

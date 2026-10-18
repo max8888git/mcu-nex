@@ -78,7 +78,9 @@
             <p class="ui-page-sub">Every curriculum in the system. Pick one to see it year by year, download it, or print it. The Deans and Program Chairs make and change curriculums; new ones arrive on From the colleges.</p>
           </div>
         </header>
-        <section class="card cb-card-wrap" id="clRoot" aria-live="polite"></section>
+@endverbatim
+        <section class="card cb-card-wrap" id="clRoot" data-role="{{ $role }}" aria-live="polite"></section>
+@verbatim
       </main>
     </div>
   </div>

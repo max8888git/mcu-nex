@@ -318,7 +318,8 @@
     var sectionsKnown = false;
 
     function allowedWorkspaces() {
-      return pageKind === 'report' ? ['final', 'awaiting'] : ['mine', 'submitted', 'saves', 'archives'];
+      // Reports has the Final report only (what waits for the VPAA is in Create schedule → For approval)
+      return pageKind === 'report' ? ['final'] : ['mine', 'submitted', 'saves', 'archives'];
     }
 
     function workspaceFromUrl() {
@@ -328,7 +329,7 @@
         if (ws === 'shared') ws = 'mine';
         if (allowedWorkspaces().indexOf(ws) >= 0) return ws;
       } catch (err) {}
-      return pageKind === 'report' ? (actor === 'vpaa' ? 'awaiting' : 'final') : 'mine';
+      return pageKind === 'report' ? 'final' : 'mine';
     }
 
     var workspace = usesWorkspace ? workspaceFromUrl() : 'mine';
@@ -1763,7 +1764,8 @@
         // on Create schedule the Colleges panel shows where each college is
         var panelShowsIt =
           (pageKind === 'create' && (workspace === 'mine' || banner.code === 'empty')) ||
-          (actor === 'vpaa' && !!qs('schedColleges'));
+          (actor === 'vpaa' && !!qs('schedColleges')) ||
+          (pageKind === 'report' && workspace === 'final' && !!qs('frColleges')); // Final report: final-report.js, per college
         if (banner.label && !panelShowsIt) {
           workspaceHint.className = 'sched-status-banner' + (banner.tone ? ' is-' + banner.tone : '');
           var hintLabel = banner.label;

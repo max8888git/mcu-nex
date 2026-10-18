@@ -1,0 +1,18 @@
+# What the deploy never uploads (and never deletes on the server).
+# Secrets and data that live only on the server:
+.env
+storage/
+bootstrap/cache/
+mcu_nex.sql
+legacy-api/config.php
+# Development only:
+.git/
+.github/
+node_modules/
+tests/
+_archive/
+parked/
+scripts/
+.claude/
+.phpunit.result.cache
+phpunit.xml

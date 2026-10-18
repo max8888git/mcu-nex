@@ -889,6 +889,10 @@
   <x-legacy-css name="app-nav" />
   <x-legacy-css name="profile" />
   <x-legacy-css name="page-loading" />
+@if ($role === 'super-admin')
+  <x-legacy-css name="ui" />
+  <x-legacy-css name="next-term" />
+@endif
   <x-legacy-js name="page-loading" />
 @verbatim
 </head>
@@ -1022,6 +1026,15 @@
                 <button type="button" class="dm-btn-sm dm-btn-sm--archive" id="dmTermArchive">Archive this offering</button>
                 <button type="button" class="dm-btn-sm dm-btn-sm--clear" id="dmTermClear">Clear</button>
               </div>
+@endverbatim
+@if ($role === 'super-admin')
+              <div class="nt-start-row">
+                <button type="button" class="nt-start" id="ntStart">Start next term…</button>
+                <span class="nt-muted">Carries this term’s sections over to the next term, with a preview to edit first.</span>
+              </div>
+              <p class="nt-undo" id="ntUndo" hidden></p>
+@endif
+@verbatim
             </div>
           </section>
 
@@ -1274,6 +1287,9 @@
   <x-legacy-js name="sections-subtabs" />
   <x-legacy-js name="sections-page" />
   <x-legacy-js name="view-sections-page" />
+@if ($role === 'super-admin')
+  <x-legacy-js name="next-term" />
+@endif
   <x-legacy-js name="notifications" defer />
 @verbatim
 </body>

@@ -7,6 +7,7 @@ function run_users_request(): void
 {
 $pdo = db();
 ensure_users_schema($pdo);
+account_email_schema();
 $me = session_user_payload($pdo);
 if (!$me) {
   json_error('Log in to manage accounts.', 401);
@@ -32,7 +33,29 @@ if ($method === 'POST') {
     if ($action === 'create') {
       $user = save_user($pdo, $actor, $body, null);
       $pdo->commit();
-      json_ok(['user' => $user, 'users' => list_users($pdo, $actor)]);
+      json_ok(['user' => $user, 'users' => list_users($pdo, $actor), 'mail' => account_email_after_save($user)]);
+    }
+    // send the "confirm your email" link again
+    if ($action === 'send_confirmation') {
+      $pdo->rollBack();
+      $id = parse_id((string) ($body['id'] ?? ''), 'u');
+      $row = $id ? load_user_row($pdo, $id) : null;
+      if (!$row) {
+        throw new RuntimeException('That account was not found.');
+      }
+      if ($actor === 'admin' && !in_array($row['role'], ['dean', 'program_chair'], true)) {
+        throw new RuntimeException('Records Officer can only manage Dean and Program Chair accounts.');
+      }
+      $user = present_user($row, []);
+      if ($user['emailConfirmed'] && !$user['passwordPending']) {
+        throw new RuntimeException($user['name'] . '’s email is already confirmed.');
+      }
+      $mail = account_email_send($user);
+      if (!$mail['sent']) {
+        throw new RuntimeException($mail['message']);
+      }
+      record_transaction($pdo, 'Account', 'account', ($user['passwordPending'] ? 'Sent the account invite again to ' : 'Sent an email confirmation link to ') . $user['name'] . ' (' . $user['email'] . ').');
+      json_ok(['users' => list_users($pdo, $actor), 'mail' => $mail]);
     }
     if ($action === 'update') {
       $id = parse_id((string) ($body['id'] ?? ''), 'u');
@@ -41,7 +64,7 @@ if ($method === 'POST') {
       }
       $user = save_user($pdo, $actor, $body, $id);
       $pdo->commit();
-      json_ok(['user' => $user, 'users' => list_users($pdo, $actor)]);
+      json_ok(['user' => $user, 'users' => list_users($pdo, $actor), 'mail' => account_email_after_save($user)]);
     }
     $pdo->rollBack();
     json_error('Unknown account action');
@@ -94,8 +117,7 @@ function role_label(string $role): string
 
 function list_users(PDO $pdo, string $actor): array
 {
-  $sql = 'SELECT u.user_id, u.full_name, u.email, u.role, u.is_active, u.college_id, u.created_at,
-                 c.college_name
+  $sql = 'SELECT u.*, c.college_name
           FROM users u
           LEFT JOIN colleges c ON c.college_id = u.college_id';
   $params = [];
@@ -187,6 +209,10 @@ function present_user(array $row, array $programs): array
     'programNames' => $programNames,
     'scopeLabel' => $scope,
     'createdAt' => $row['created_at'] ? date('c', strtotime((string) $row['created_at'])) : null,
+    // account emails (App\Support\AccountEmail)
+    'emailConfirmed' => !empty($row['email_verified_at']),
+    'mustChangePassword' => !empty($row['must_change_password']),
+    'passwordPending' => !empty($row['password_pending']),
   ];
 }
 
@@ -259,7 +285,12 @@ function save_user(PDO $pdo, string $actor, array $body, ?int $existingId): arra
   $password = (string) ($body['password'] ?? '');
   $passwordConfirm = (string) ($body['passwordConfirm'] ?? $password);
   $hash = null;
-  if (!$existingId || $password !== '') {
+  // a new account with no password is invited: it gets a password nobody knows and a
+  // "Set up your account" email to choose its own (App\Support\AccountEmail)
+  $invite = !$existingId && $password === '';
+  if ($invite) {
+    $hash = password_hash(bin2hex(random_bytes(24)), PASSWORD_DEFAULT);
+  } elseif (!$existingId || $password !== '') {
     if (strlen($password) < 5) {
       throw new RuntimeException('Use a password of at least 5 characters.');
     }
@@ -303,6 +334,21 @@ function save_user(PDO $pdo, string $actor, array $body, ?int $existingId): arra
     $uid = (int) $pdo->lastInsertId();
   }
 
+  $emailChanged = !$existing || strcasecmp((string) $existing['email'], $email) !== 0;
+  if (account_email_columns($pdo)) {
+    $me = current_session_user_id();
+    if ($invite) {
+      $pdo->prepare('UPDATE users SET password_pending = 1, must_change_password = 0 WHERE user_id = ?')->execute([$uid]);
+    } elseif ($hash && (int) $me !== $uid) {
+      // a starting password from the registrar (the backup to the invite): change it at first sign-in
+      $pdo->prepare('UPDATE users SET must_change_password = 1, password_pending = 0 WHERE user_id = ?')->execute([$uid]);
+    }
+    if ($emailChanged) {
+      $pdo->prepare('UPDATE users SET email_verified_at = NULL WHERE user_id = ?')->execute([$uid]);
+    }
+  }
+  $GLOBALS['MCU_ACCOUNT_EMAIL_CHANGED'] = $emailChanged;
+
   $pdo->prepare('DELETE FROM user_programs WHERE user_id = ?')->execute([$uid]);
   if ($role === 'program_chair') {
     $link = $pdo->prepare('INSERT INTO user_programs (user_id, program_id) VALUES (?, ?)');
@@ -319,8 +365,7 @@ function save_user(PDO $pdo, string $actor, array $body, ?int $existingId): arra
 function load_user_row(PDO $pdo, int $id): ?array
 {
   $stmt = $pdo->prepare(
-    'SELECT u.user_id, u.full_name, u.email, u.role, u.is_active, u.college_id, u.created_at,
-            c.college_name
+    'SELECT u.*, c.college_name
      FROM users u
      LEFT JOIN colleges c ON c.college_id = u.college_id
      WHERE u.user_id = ?'
@@ -396,5 +441,51 @@ function verify_actor_password(PDO $pdo, string $actor, string $password): void
   }
   if (!password_verify($password, (string) $row['password_hash'])) {
     throw new RuntimeException('That password does not match your account.');
+  }
+}
+
+// ---------------------------------------------------------------- account emails
+// Confirmation links go out through App\Support\AccountEmail (Laravel's mailer). Sending can fail
+// (no mail settings yet); the account is still saved and the page says so.
+
+function account_email_schema(): void
+{
+  if (class_exists(\App\Support\AccountEmail::class)) {
+    \App\Support\AccountEmail::ensureSchema();
+  }
+}
+
+function account_email_columns(PDO $pdo): bool
+{
+  return schema_column_exists($pdo, 'users', 'email_verified_at') && schema_column_exists($pdo, 'users', 'must_change_password') && schema_column_exists($pdo, 'users', 'password_pending');
+}
+
+/** After create / update: a new account gets its invite; a changed email a confirmation link (or the invite again). */
+function account_email_after_save(array $user): ?array
+{
+  if (empty($GLOBALS['MCU_ACCOUNT_EMAIL_CHANGED']) || (!empty($user['emailConfirmed']) && empty($user['passwordPending']))) {
+    return null;
+  }
+  return account_email_send($user);
+}
+
+function account_email_send(array $user): array
+{
+  if (!class_exists(\App\Support\AccountEmail::class)) {
+    return ['sent' => false, 'message' => 'Email isn’t set up on this server.'];
+  }
+  $id = (int) parse_id((string) $user['id'], 'u');
+  $pending = !empty($user['passwordPending']);
+  try {
+    if ($pending) {
+      $role = trim((string) ($user['roleLabel'] ?? '') . ($user['scopeLabel'] !== '' ? ', ' . $user['scopeLabel'] : ''));
+      \App\Support\AccountEmail::sendInvite($id, (string) $user['email'], (string) $user['name'], $role);
+      return ['sent' => true, 'message' => 'An invite to set up the account was emailed to ' . $user['email'] . '.'];
+    }
+    \App\Support\AccountEmail::sendConfirmation($id, (string) $user['email'], (string) $user['name']);
+    return ['sent' => true, 'message' => 'A confirmation link was emailed to ' . $user['email'] . '.'];
+  } catch (Throwable $e) {
+    error_log('Account email failed: ' . $e->getMessage());
+    return ['sent' => false, 'message' => 'The email couldn’t be sent (' . $e->getMessage() . '). Use “' . ($pending ? 'Resend invite' : 'Send confirmation email') . '” once email works, or give them a starting password.'];
   }
 }

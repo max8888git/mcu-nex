@@ -7,11 +7,11 @@
 @endverbatim
 @if ($role === 'viewing-program-head')
 @verbatim
-  <title>MCU-NEX | Program Head – Requests</title>
+  <title>MCU-NEX | Program Chair – Requests</title>
 @endverbatim
 @else
 @verbatim
-  <title>MCU-NEX | CAS – Requests</title>
+  <title>MCU-NEX | Dean – Requests</title>
 @endverbatim
 @endif
   @fonts

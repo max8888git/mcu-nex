@@ -84,6 +84,10 @@ function ensure_curriculum_reviews_schema(PDO $pdo): void
     if (!schema_column_exists($pdo, 'curriculum_reviews', 'return_json')) {
       $pdo->exec('ALTER TABLE curriculum_reviews ADD COLUMN return_json LONGTEXT NULL AFTER last_return_at');
     }
+    // a draft's own name ("With new electives"), so several drafts can be told apart
+    if (!schema_column_exists($pdo, 'curriculum_reviews', 'name')) {
+      $pdo->exec('ALTER TABLE curriculum_reviews ADD COLUMN name VARCHAR(80) NULL AFTER version');
+    }
     return;
   }
   $pdo->exec(
@@ -92,6 +96,7 @@ function ensure_curriculum_reviews_schema(PDO $pdo): void
       program_id INT NOT NULL,
       academic_year VARCHAR(9) NOT NULL,
       version INT NOT NULL DEFAULT 1,
+      name VARCHAR(80) NULL,
       status ENUM('draft','pending_dean','dean_approved','pending_registrar','accepted','superseded') NOT NULL DEFAULT 'draft',
       courses_json LONGTEXT NULL,
       notes TEXT NULL,
@@ -226,6 +231,20 @@ function curriculum_user_names(PDO $pdo, array $ids): array
   return $out;
 }
 
+/** The draft's name, or "Draft N" for one made before names. */
+function curriculum_review_name(array $row): string
+{
+  $name = trim((string) ($row['name'] ?? ''));
+  return $name !== '' ? $name : 'Draft ' . (int) $row['version'];
+}
+
+/** A cleaned name for a draft (1–80 characters). */
+function curriculum_clean_name(string $name, string $fallback): string
+{
+  $name = trim(preg_replace('/\s+/', ' ', $name) ?? '');
+  return $name === '' ? $fallback : mb_substr($name, 0, 80);
+}
+
 /** Made by a Dean (not a Program Chair)? */
 function curriculum_made_by_dean(PDO $pdo, array $row): bool
 {
@@ -260,6 +279,7 @@ function curriculum_review_public(PDO $pdo, array $row, ?array $program = null):
     'collegeName' => (string) $program['college_name'],
     'academicYear' => (string) $row['academic_year'],
     'version' => (int) $row['version'],
+    'name' => curriculum_review_name($row),
     'status' => (string) $row['status'],
     'notes' => (string) ($row['notes'] ?? ''),
     'courseCount' => count($courses),
@@ -327,6 +347,7 @@ function curriculum_review_can(PDO $pdo, array $me, array $row, array $program):
     // the Dean can still edit after approving, until it's sent to the Registrar
     'edit' => ($chair && $st === 'draft' && !$deanDraft) || ($dean && in_array($st, ['draft', 'pending_dean', 'dean_approved'], true)),
     'discard' => (($chair && !$deanDraft) || $dean) && $st === 'draft',
+    'rename' => ($chair && $st === 'draft' && !$deanDraft) || ($dean && in_array($st, ['draft', 'pending_dean', 'dean_approved'], true)),
     'sendToDean' => $chair && $st === 'draft' && !$deanDraft,
     'deanDecide' => $dean && $st === 'pending_dean',
     // the Dean may send their own draft, or approve and send in one step
@@ -598,25 +619,6 @@ function curriculum_valid_year(string $year): string
   return $year;
 }
 
-/**
- * The version in progress, leaving out the Dean's own drafts (those sit beside it).
- * $deanDraft = true gives the Dean's own draft instead.
- */
-function curriculum_open_version(PDO $pdo, int $programId, ?int $exceptId = null, bool $deanDraft = false): ?array
-{
-  $stmt = $pdo->prepare(
-    "SELECT * FROM curriculum_reviews WHERE program_id = ? AND status IN ('draft','pending_dean','dean_approved','pending_registrar')"
-    . ($exceptId ? ' AND review_id <> ' . (int) $exceptId : '') . ' ORDER BY review_id DESC'
-  );
-  $stmt->execute([$programId]);
-  foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-    if (curriculum_is_dean_draft($pdo, $row) === $deanDraft) {
-      return $row;
-    }
-  }
-  return null;
-}
-
 /** Only one version of a program is on its way to the Registrar at a time. */
 function curriculum_assert_none_on_the_way(PDO $pdo, array $row, string $role = ''): void
 {
@@ -761,13 +763,7 @@ function curriculum_review_action(PDO $pdo, array $me, string $action, array $bo
     if ($me['role'] === 'program_chair' && (int) $program['use_departments'] !== 1) {
       throw new RuntimeException('In this college the Dean makes the curriculum.');
     }
-    // the Program Chair works on one version at a time; the Dean may keep a draft of their own beside it
-    if ($me['role'] === 'dean' && ($open = curriculum_open_version($pdo, $programId, null, true))) {
-      throw new RuntimeException('You already have a draft of this curriculum (version ' . $open['version'] . '). Open that one instead.');
-    }
-    if ($me['role'] === 'program_chair' && ($open = curriculum_open_version($pdo, $programId))) {
-      throw new RuntimeException('A version of this curriculum is already in progress (version ' . $open['version'] . '). Open that one instead.');
-    }
+    // any number of drafts; only one version goes on to the Dean / Registrar at a time (curriculum_assert_none_on_the_way)
     $year = curriculum_valid_year((string) ($body['academicYear'] ?? ''));
     $courses = [];
     $from = (string) ($body['from'] ?? 'blank');
@@ -782,9 +778,11 @@ function curriculum_review_action(PDO $pdo, array $me, string $action, array $bo
     } elseif ($from === 'import') {
       $courses = curriculum_clean_courses($body['courses'] ?? []);
     }
-    $pdo->prepare('INSERT INTO curriculum_reviews (program_id, academic_year, version, status, courses_json, created_by, updated_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)')
-      ->execute([$programId, $year, curriculum_next_version($pdo, $programId), 'draft', json_encode($courses, JSON_UNESCAPED_UNICODE), $uid, $uid]);
+    $version = curriculum_next_version($pdo, $programId);
+    $pdo->prepare('INSERT INTO curriculum_reviews (program_id, academic_year, version, name, status, courses_json, created_by, updated_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      ->execute([$programId, $year, $version, curriculum_clean_name((string) ($body['name'] ?? ''), 'Draft ' . $version), 'draft',
+        json_encode($courses, JSON_UNESCAPED_UNICODE), $uid, $uid]);
     $id = (int) $pdo->lastInsertId();
     record_transaction($pdo, 'Add', 'curriculum', 'Started a curriculum draft for ' . $program['program_name'] . ' ' . $year . '.');
     return ['review' => curriculum_review_full($pdo, curriculum_review_row($pdo, $id), $me)];
@@ -816,7 +814,7 @@ function curriculum_review_one(PDO $pdo, array $me, string $action, array $row, 
   $id = (int) $row['review_id'];
   $program = curriculum_program($pdo, (int) $row['program_id']);
   $can = curriculum_review_can($pdo, $me, $row, $program);
-  $what = $program['program_name'] . ' ' . $row['academic_year'] . ' (version ' . $row['version'] . ')';
+  $what = $program['program_name'] . ' ' . $row['academic_year'] . ' (version ' . $row['version'] . ', “' . curriculum_review_name($row) . '”)';
   $problems = static fn () => curriculum_problems($pdo, curriculum_review_courses(curriculum_review_row($pdo, $id)));
 
   switch ($action) {
@@ -838,6 +836,18 @@ function curriculum_review_one(PDO $pdo, array $me, string $action, array $row, 
         'courses_json' => json_encode($courses, JSON_UNESCAPED_UNICODE),
         'notes' => trim((string) ($body['notes'] ?? $row['notes'] ?? '')),
       ], $uid);
+      break;
+    }
+    case 'rename': {
+      if (!$can['rename']) {
+        throw new RuntimeException('This version can’t be renamed right now.');
+      }
+      $name = curriculum_clean_name((string) ($body['name'] ?? ''), '');
+      if ($name === '') {
+        throw new RuntimeException('Give the draft a name.');
+      }
+      curriculum_save_row($pdo, $id, ['name' => $name], $uid);
+      record_transaction($pdo, 'Edit', 'curriculum', 'Renamed ' . $what . ' to “' . $name . '”.');
       break;
     }
     case 'discard': {
@@ -980,13 +990,11 @@ function curriculum_review_one(PDO $pdo, array $me, string $action, array $row, 
       }
       $rowNotes = curriculum_row_notes($body['rowNotes'] ?? [], curriculum_review_courses($row));
       $note = curriculum_return_note($note, $rowNotes, 'Say what needs to change.');
-      if ($open = curriculum_open_version($pdo, (int) $row['program_id'])) {
-        throw new RuntimeException('A new version is already in progress (version ' . $open['version'] . ').');
-      }
-      $pdo->prepare('INSERT INTO curriculum_reviews (program_id, academic_year, version, status, courses_json, revision_of, created_by, updated_by,
+      $version = curriculum_next_version($pdo, (int) $row['program_id']);
+      $pdo->prepare('INSERT INTO curriculum_reviews (program_id, academic_year, version, name, status, courses_json, revision_of, created_by, updated_by,
                        last_return_from, last_return_note, last_return_at, return_json)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)')
-        ->execute([(int) $row['program_id'], $row['academic_year'], curriculum_next_version($pdo, (int) $row['program_id']), 'draft',
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)')
+        ->execute([(int) $row['program_id'], $row['academic_year'], $version, 'Revision of version ' . $row['version'], 'draft',
           $row['courses_json'], $id, (int) ($row['created_by'] ?: $uid), $uid, 'registrar', $note,
           curriculum_return_json($pdo, $row, 'registrar', $rowNotes)]); // still prepared by the college
       $newId = (int) $pdo->lastInsertId();

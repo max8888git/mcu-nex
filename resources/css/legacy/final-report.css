@@ -1,0 +1,32 @@
+/* Reports → Final report: approved timetable per college (final-report.js), in the page's old look */
+.fr-colleges:empty { display: none; }
+.fr-colleges { margin: 0 0 0.9rem; padding: 0.75rem 0.9rem; border: 1px solid var(--border-soft, #e3d9f0); border-radius: 0.65rem; background: #fbf9fd; }
+.fr-head { margin-bottom: 0.55rem; font-size: 0.88rem; color: var(--purple, #5c267e); }
+.fr-sub { color: var(--text-muted, #7a6992); font-size: 0.8rem; }
+.fr-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.fr-college {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  max-width: 20rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-soft, #e3d9f0);
+  border-left-width: 4px;
+  border-radius: 0.55rem;
+  background: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.fr-college:hover { border-color: #c9b4e3; }
+.fr-college.is-picked { box-shadow: 0 0 0 2px rgba(92, 38, 126, 0.25); border-color: var(--purple, #5c267e); }
+.fr-college--ok { border-left-color: #16a34a; }
+.fr-college--warn { border-left-color: #f59e0b; }
+.fr-college--none { border-left-color: #cbd5e1; background: #fafafa; }
+.fr-name { font-size: 0.86rem; font-weight: 600; color: var(--text-main, #1f1230); }
+.fr-meta { font-size: 0.76rem; color: var(--text-muted, #7a6992); }
+.fr-college--ok .fr-meta { color: #15803d; }
+.fr-note { font-size: 0.74rem; color: #92400e; line-height: 1.35; }
+.fr-empty { margin-top: 0.6rem; font-size: 0.84rem; color: #7c2d12; }
+@media print { .fr-colleges { display: none; } }

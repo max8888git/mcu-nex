@@ -1356,12 +1356,14 @@
             </div>
           </div>
           <p class="ui-field-error" id="rfTimeError" hidden>The end time must be after the start time.</p>
+          <p class="rf-now-hint" id="rfNowHint" role="status" hidden></p>
           <div class="rf-options">
             <label><input type="checkbox" id="rfShowBooked"> Show booked rooms</label>
             <label><input type="checkbox" id="rfShowRepair"> Show rooms under maintenance</label>
             <span class="rf-spacer"></span>
-            <button type="button" class="ui-btn" id="rfNow">Right now</button>
+            <button type="button" class="rf-link" id="rfNow">Use current time</button>
             <button type="button" class="ui-btn" id="rfClear">Clear filters</button>
+            <button type="button" class="ui-btn ui-btn--primary" id="rfShow">Show</button>
           </div>
         </section>
 

@@ -57,6 +57,8 @@ class DomainCatalog
             'facilities.php',
             'curricula.php',
             'curriculum-reviews.php',
+            'curriculum-archive.php',
+            'term-rollover.php',
             'schedule.php',
             'requests.php',
             'users.php',

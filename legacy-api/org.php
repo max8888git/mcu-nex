@@ -17,11 +17,7 @@ if ($method === 'PUT') {
   $body = json_input();
   try {
     $pdo->beginTransaction();
-    $beforeOrg = org_audit_state($pdo);
-    sync_org($pdo, $body);
-    foreach (org_audit_changes($beforeOrg, org_audit_state($pdo)) as $change) {
-      record_transaction($pdo, $change['action'], $change['area'], $change['summary']);
-    }
+    org_save_document($pdo, $body);
     $pdo->commit();
     json_ok(['org' => org_document($pdo)]);
   } catch (Throwable $e) {
@@ -60,6 +56,12 @@ if ($method === 'POST') {
       record_transaction($pdo, 'Add', 'program', 'Added program ' . (string) ($program['name'] ?? 'a program') . '.');
       $pdo->commit();
       json_ok(['program' => $program, 'org' => org_document($pdo)]);
+    }
+    if ($action === 'deleteCollege' || $action === 'deleteDepartment' || $action === 'deleteProgram') {
+      org_require_registrar_to_delete($pdo);
+      org_delete($pdo, $action, (string) ($body['id'] ?? ''));
+      $pdo->commit();
+      json_ok(['org' => org_document($pdo)]);
     }
     $pdo->rollBack();
     json_error('Unknown org action');
@@ -133,6 +135,15 @@ function org_document(PDO $pdo): array
     $deptsByCollege[(int) $d['college_id']][] = $d;
   }
 
+  // Archived records carry the same usage numbers as active ones so the page
+  // can tell what is safe to delete. Like the delete itself, they count every
+  // program (archived or not) that sits under the record.
+  $counts = org_usage_counts($pdo);
+  $programsByCollege = [];
+  foreach ($programs as $p) {
+    $programsByCollege[(int) $p['college_id']][] = $p;
+  }
+
   $active = [];
   $archivedColleges = [];
   $archivedDeptOnly = [];
@@ -172,6 +183,7 @@ function org_document(PDO $pdo): array
           'parentCode' => $c['college_code'],
           'parentName' => $c['college_name'],
           'archivedLabel' => $d['archived_label'] ?: '',
+          'usage' => org_programs_usage($counts, $programsByDept[$did] ?? [], (int) ($counts['chairs'][$did] ?? 0)),
         ];
       }
     }
@@ -190,15 +202,233 @@ function org_document(PDO $pdo): array
       $active[] = $row;
     } else {
       $row['archivedLabel'] = $c['archived_label'] ?: '';
+      $row['usage'] = org_programs_usage($counts, $programsByCollege[$cid] ?? [], (int) ($counts['collegeAccounts'][$cid] ?? 0));
       $archivedColleges[] = $row;
     }
   }
+
+  $archivedPrograms = [];
+  foreach ($programs as $p) {
+    if ((int) $p['is_active'] === 1) {
+      continue;
+    }
+    $cid = (int) $p['college_id'];
+    $collegeRow = null;
+    foreach ($colleges as $college) {
+      if ((int) $college['college_id'] === $cid) {
+        $collegeRow = $college;
+        break;
+      }
+    }
+    if (!$collegeRow || (int) $collegeRow['is_active'] !== 1) {
+      continue;
+    }
+    $deptId = (int) ($p['department_id'] ?? 0);
+    $deptName = '';
+    $deptActive = $deptId < 1;
+    foreach ($departments as $department) {
+      if ((int) $department['department_id'] === $deptId) {
+        $deptName = (string) $department['department_name'];
+        $deptActive = (int) $department['is_active'] === 1;
+        break;
+      }
+    }
+    // A college's own (direct) program does not belong to any department, so a
+    // stray department link must neither hide it nor be shown as its parent.
+    if ((int) $p['represents_college'] === 1) {
+      $deptId = 0;
+      $deptName = '';
+      $deptActive = true;
+    }
+    if (!$deptActive) {
+      continue;
+    }
+    $archivedPrograms[] = [
+      'id' => public_id('d', (int) $p['program_id']),
+      'name' => (string) $p['program_name'],
+      'collegeId' => public_id('c', $cid),
+      'collegeName' => (string) $collegeRow['college_name'],
+      'departmentId' => $deptId > 0 ? public_id('dept', $deptId) : '',
+      'departmentName' => $deptName,
+      'archivedLabel' => $p['archived_label'] ?: '',
+      'usage' => org_program_usage($counts, (int) $p['program_id']),
+    ];
+  }
+
+  org_attach_usage($pdo, $active, $counts);
 
   return [
     'active' => $active,
     'archivedColleges' => $archivedColleges,
     'archivedDeptOnly' => $archivedDeptOnly,
+    'archivedPrograms' => $archivedPrograms,
   ];
+}
+
+/** @param array<int, array<string, mixed>> $active */
+function org_attach_usage(PDO $pdo, array &$active, ?array $counts = null): void
+{
+  $counts = $counts ?? org_usage_counts($pdo);
+  foreach ($active as &$college) {
+    $cid = (int) parse_id((string) ($college['id'] ?? ''), 'c');
+    $college['deanName'] = (string) ($counts['deans'][$cid] ?? '');
+    $sections = 0;
+    $curricula = 0;
+    $drafts = 0;
+    $accounts = (int) ($counts['collegeAccounts'][$cid] ?? 0);
+    if (is_array($college['program'] ?? null) && !empty($college['program']['id'])) {
+      $usage = org_program_usage($counts, (int) parse_id((string) $college['program']['id'], 'd'));
+      $college['program']['usage'] = $usage;
+      $sections += $usage['sections'];
+      $curricula += $usage['curricula'];
+      $drafts += $usage['drafts'];
+      $accounts += $usage['accounts'];
+    }
+    $departments = is_array($college['departments'] ?? null) ? $college['departments'] : [];
+    foreach ($departments as &$department) {
+      $did = (int) parse_id((string) ($department['id'] ?? ''), 'dept');
+      $dSections = 0;
+      $dCurricula = 0;
+      $dDrafts = 0;
+      $dAccounts = (int) ($counts['chairs'][$did] ?? 0);
+      $programs = is_array($department['programs'] ?? null) ? $department['programs'] : [];
+      foreach ($programs as &$program) {
+        $usage = org_program_usage($counts, (int) parse_id((string) ($program['id'] ?? ''), 'd'));
+        $program['usage'] = $usage;
+        $dSections += $usage['sections'];
+        $dCurricula += $usage['curricula'];
+        $dDrafts += $usage['drafts'];
+        $dAccounts += $usage['accounts'];
+      }
+      unset($program);
+      $department['programs'] = $programs;
+      $department['usage'] = org_usage_row($dSections, $dCurricula, $dDrafts, $dAccounts);
+      $sections += $dSections;
+      $curricula += $dCurricula;
+      $drafts += $dDrafts;
+      $accounts += $dAccounts - (int) ($counts['chairs'][$did] ?? 0);
+    }
+    unset($department);
+    $college['departments'] = $departments;
+    $college['usage'] = org_usage_row($sections, $curricula, $drafts, $accounts);
+  }
+  unset($college);
+}
+
+/** @return array{sections: array<int, int>, curricula: array<int, int>, drafts: array<int, int>, accounts: array<int, int>, deans: array<int, string>, chairs: array<int, int>, collegeAccounts: array<int, int>} */
+function org_usage_counts(PDO $pdo): array
+{
+  $out = [
+    'sections' => [],
+    'curricula' => [],
+    'drafts' => [],
+    'accounts' => [],
+    'deans' => [],
+    'chairs' => [],
+    'collegeAccounts' => [],
+  ];
+  foreach ($pdo->query('SELECT program_id, COUNT(*) n FROM sections GROUP BY program_id') as $row) {
+    $out['sections'][(int) $row['program_id']] = (int) $row['n'];
+  }
+  if (schema_table_exists($pdo, 'curricula')) {
+    foreach ($pdo->query('SELECT program_id, COUNT(*) n FROM curricula GROUP BY program_id') as $row) {
+      $out['curricula'][(int) $row['program_id']] = (int) $row['n'];
+    }
+  }
+  if (schema_table_exists($pdo, 'curriculum_reviews')) {
+    foreach ($pdo->query('SELECT program_id, COUNT(*) n FROM curriculum_reviews GROUP BY program_id') as $row) {
+      $out['drafts'][(int) $row['program_id']] = (int) $row['n'];
+    }
+  }
+  if (schema_table_exists($pdo, 'user_programs')) {
+    foreach ($pdo->query('SELECT program_id, COUNT(*) n FROM user_programs GROUP BY program_id') as $row) {
+      $out['accounts'][(int) $row['program_id']] = (int) $row['n'];
+    }
+  }
+  foreach ($pdo->query("SELECT college_id, full_name FROM users WHERE role = 'dean' AND is_active = 1 AND college_id IS NOT NULL ORDER BY full_name") as $row) {
+    $cid = (int) $row['college_id'];
+    if (!isset($out['deans'][$cid])) {
+      $out['deans'][$cid] = (string) $row['full_name'];
+    }
+  }
+  foreach ($pdo->query("SELECT department_id, COUNT(*) n FROM users WHERE role = 'program_chair' AND is_active = 1 AND department_id IS NOT NULL GROUP BY department_id") as $row) {
+    $out['chairs'][(int) $row['department_id']] = (int) $row['n'];
+  }
+  foreach ($pdo->query("SELECT college_id, COUNT(*) n FROM users WHERE is_active = 1 AND college_id IS NOT NULL AND role IN ('dean', 'program_chair') GROUP BY college_id") as $row) {
+    $out['collegeAccounts'][(int) $row['college_id']] = (int) $row['n'];
+  }
+  return $out;
+}
+
+/** @param array{sections: array<int, int>, curricula: array<int, int>, drafts: array<int, int>, accounts: array<int, int>} $counts */
+function org_program_usage(array $counts, int $programId): array
+{
+  return org_usage_row(
+    (int) ($counts['sections'][$programId] ?? 0),
+    (int) ($counts['curricula'][$programId] ?? 0),
+    (int) ($counts['drafts'][$programId] ?? 0),
+    (int) ($counts['accounts'][$programId] ?? 0)
+  );
+}
+
+/**
+ * Usage of a record that owns several programs, plus the accounts tied to it.
+ *
+ * @param array<int, array<string, mixed>> $programRows rows with a program_id
+ * @return array{sections: int, curricula: int, drafts: int, accounts: int}
+ */
+function org_programs_usage(array $counts, array $programRows, int $accounts): array
+{
+  $sections = 0;
+  $curricula = 0;
+  $drafts = 0;
+  foreach ($programRows as $row) {
+    $one = org_program_usage($counts, (int) $row['program_id']);
+    $sections += $one['sections'];
+    $curricula += $one['curricula'];
+    $drafts += $one['drafts'];
+    $accounts += $one['accounts'];
+  }
+  return org_usage_row($sections, $curricula, $drafts, $accounts);
+}
+
+/** @return array{sections: int, curricula: int, drafts: int, accounts: int} */
+function org_usage_row(int $sections, int $curricula, int $drafts, int $accounts): array
+{
+  return [
+    'sections' => $sections,
+    'curricula' => $curricula,
+    'drafts' => $drafts,
+    'accounts' => $accounts,
+  ];
+}
+
+function org_usage_sentence(array $usage): string
+{
+  $parts = [];
+  $sections = (int) ($usage['sections'] ?? 0);
+  $curricula = (int) ($usage['curricula'] ?? 0);
+  $drafts = (int) ($usage['drafts'] ?? 0);
+  $accounts = (int) ($usage['accounts'] ?? 0);
+  if ($sections > 0) {
+    $parts[] = $sections . ($sections === 1 ? ' section' : ' sections');
+  }
+  if ($curricula > 0) {
+    $parts[] = $curricula . ($curricula === 1 ? ' curriculum' : ' curricula');
+  }
+  if ($drafts > 0) {
+    $parts[] = $drafts . ($drafts === 1 ? ' curriculum draft' : ' curriculum drafts');
+  }
+  if ($accounts > 0) {
+    $parts[] = $accounts . ($accounts === 1 ? ' account' : ' accounts');
+  }
+  return implode(', ', $parts);
+}
+
+function org_program_usage_live(PDO $pdo, int $programId): array
+{
+  $counts = org_usage_counts($pdo);
+  return org_program_usage($counts, $programId);
 }
 
 function add_college(PDO $pdo, string $name, string $code, bool $useDepartments): array
@@ -353,6 +583,20 @@ function direct_program_id(PDO $pdo, int $collegeId): int
   return (int) $fallback->fetchColumn();
 }
 
+/**
+ * uq_programs_sole allows one represents_college = 1 row per college, archived or not.
+ * An archived direct program keeps that flag, so before another one is saved the
+ * archived rows give the slot up. They stay archived (and listed as archived programs).
+ */
+function release_direct_program_slot(PDO $pdo, int $collegeId, int $exceptProgramId): void
+{
+  $pdo->prepare(
+    'UPDATE programs
+     SET represents_college = 0, department_id = NULL
+     WHERE college_id = ? AND represents_college = 1 AND is_active = 0 AND program_id <> ?'
+  )->execute([$collegeId, $exceptProgramId]);
+}
+
 function upsert_direct_program(PDO $pdo, int $collegeId, array $program, string $collegeCode): int
 {
   $name = trim((string) ($program['name'] ?? ''));
@@ -376,6 +620,7 @@ function upsert_direct_program(PDO $pdo, int $collegeId, array $program, string 
     $exists = $pdo->prepare('SELECT program_id FROM programs WHERE program_id = ?');
     $exists->execute([$id]);
     if ($exists->fetch()) {
+      release_direct_program_slot($pdo, $collegeId, $id);
       $pdo->prepare(
         'UPDATE programs
          SET college_id = ?, department_id = NULL, program_name = ?, represents_college = 1, archived_label = NULL, is_active = 1
@@ -384,6 +629,7 @@ function upsert_direct_program(PDO $pdo, int $collegeId, array $program, string 
       return $id;
     }
   }
+  release_direct_program_slot($pdo, $collegeId, 0);
   $code = unique_code(
     $pdo,
     'programs',
@@ -420,6 +666,142 @@ function insert_department(PDO $pdo, int $collegeId, string $name, string $colle
   );
   $ins->execute([$collegeId, $code, $name]);
   return (int) $pdo->lastInsertId();
+}
+
+function org_keep_direct_program_when_departments_start(PDO $pdo, array &$seenPrograms, array $seenDepartments): void
+{
+  $rows = $pdo->query(
+    'SELECT p.program_id, p.college_id
+     FROM programs p
+     JOIN colleges c ON c.college_id = p.college_id
+     WHERE p.is_active = 1 AND c.is_active = 1 AND c.use_departments = 1
+       AND (p.represents_college = 1 OR p.department_id IS NULL)'
+  )->fetchAll();
+  foreach ($rows as $row) {
+    $pid = (int) $row['program_id'];
+    if (isset($seenPrograms[$pid])) {
+      continue;
+    }
+    $dept = $pdo->prepare(
+      'SELECT department_id FROM departments
+       WHERE college_id = ? AND is_active = 1
+       ORDER BY department_id
+       LIMIT 1'
+    );
+    $dept->execute([(int) $row['college_id']]);
+    $deptId = (int) $dept->fetchColumn();
+    if ($deptId < 1 || !isset($seenDepartments[$deptId])) {
+      $seenPrograms[$pid] = true;
+      continue;
+    }
+    $pdo->prepare(
+      'UPDATE programs
+       SET department_id = ?, represents_college = 0, is_active = 1, archived_label = NULL
+       WHERE program_id = ?'
+    )->execute([$deptId, $pid]);
+    $seenPrograms[$pid] = true;
+  }
+}
+
+/** Colleges, departments, and programs are sensitive: the Records Officer archives, only the University Registrar deletes. */
+function org_require_registrar_to_delete(PDO $pdo): void
+{
+  $me = session_db_user($pdo);
+  if (($me['role'] ?? '') !== 'super_admin') {
+    throw new RuntimeException('Only the University Registrar can delete this. Archive it instead; it can be restored later.');
+  }
+}
+
+function org_delete(PDO $pdo, string $action, string $publicId): void
+{
+  if ($action === 'deleteProgram') {
+    $pid = parse_id($publicId, 'd');
+    if (!$pid) {
+      throw new RuntimeException('That program could not be found.');
+    }
+    $name = $pdo->prepare('SELECT program_name FROM programs WHERE program_id = ?');
+    $name->execute([$pid]);
+    $label = $name->fetchColumn();
+    if ($label === false) {
+      throw new RuntimeException('That program could not be found.');
+    }
+    $label = (string) $label;
+    $why = org_usage_sentence(org_program_usage_live($pdo, $pid));
+    if ($why !== '') {
+      throw new RuntimeException($label . ' is still used by ' . $why . '. Archive it instead. Archiving hides it from new work and keeps the sections, curricula, and schedules.');
+    }
+    $pdo->prepare('DELETE FROM programs WHERE program_id = ?')->execute([$pid]);
+    record_transaction($pdo, 'Delete', 'program', 'Deleted program ' . $label . '.');
+    return;
+  }
+  if ($action === 'deleteDepartment') {
+    $did = parse_id($publicId, 'dept');
+    if (!$did) {
+      throw new RuntimeException('That department could not be found.');
+    }
+    $name = $pdo->prepare('SELECT department_name FROM departments WHERE department_id = ?');
+    $name->execute([$did]);
+    $label = $name->fetchColumn();
+    if ($label === false) {
+      throw new RuntimeException('That department could not be found.');
+    }
+    $label = (string) $label;
+    $usage = org_usage_row(0, 0, 0, 0);
+    $programs = $pdo->prepare('SELECT program_id FROM programs WHERE department_id = ?');
+    $programs->execute([$did]);
+    foreach ($programs->fetchAll() as $row) {
+      $one = org_program_usage_live($pdo, (int) $row['program_id']);
+      $usage['sections'] += $one['sections'];
+      $usage['curricula'] += $one['curricula'];
+      $usage['drafts'] += $one['drafts'];
+      $usage['accounts'] += $one['accounts'];
+    }
+    $chairs = $pdo->prepare("SELECT COUNT(*) FROM users WHERE department_id = ? AND is_active = 1 AND role = 'program_chair'");
+    $chairs->execute([$did]);
+    $usage['accounts'] += (int) $chairs->fetchColumn();
+    $why = org_usage_sentence($usage);
+    if ($why !== '') {
+      throw new RuntimeException($label . ' is still used by ' . $why . '. Archive it instead. Archiving hides it from new work and keeps the sections, curricula, and schedules.');
+    }
+    $pdo->prepare('DELETE FROM programs WHERE department_id = ?')->execute([$did]);
+    $pdo->prepare('DELETE FROM departments WHERE department_id = ?')->execute([$did]);
+    record_transaction($pdo, 'Delete', 'department', 'Deleted department ' . $label . '.');
+    return;
+  }
+  if ($action === 'deleteCollege') {
+    $cid = parse_id($publicId, 'c');
+    if (!$cid) {
+      throw new RuntimeException('That college could not be found.');
+    }
+    $name = $pdo->prepare('SELECT college_name FROM colleges WHERE college_id = ?');
+    $name->execute([$cid]);
+    $label = $name->fetchColumn();
+    if ($label === false) {
+      throw new RuntimeException('That college could not be found.');
+    }
+    $label = (string) $label;
+    $usage = org_usage_row(0, 0, 0, 0);
+    $programs = $pdo->prepare('SELECT program_id FROM programs WHERE college_id = ?');
+    $programs->execute([$cid]);
+    foreach ($programs->fetchAll() as $row) {
+      $one = org_program_usage_live($pdo, (int) $row['program_id']);
+      $usage['sections'] += $one['sections'];
+      $usage['curricula'] += $one['curricula'];
+      $usage['drafts'] += $one['drafts'];
+      $usage['accounts'] += $one['accounts'];
+    }
+    $people = $pdo->prepare("SELECT COUNT(*) FROM users WHERE college_id = ? AND is_active = 1 AND role IN ('dean', 'program_chair')");
+    $people->execute([$cid]);
+    $usage['accounts'] += (int) $people->fetchColumn();
+    $why = org_usage_sentence($usage);
+    if ($why !== '') {
+      throw new RuntimeException($label . ' is still used by ' . $why . '. Archive it instead. Archiving hides it from new work and keeps the sections, curricula, and schedules.');
+    }
+    $pdo->prepare('DELETE FROM programs WHERE college_id = ?')->execute([$cid]);
+    $pdo->prepare('DELETE FROM departments WHERE college_id = ?')->execute([$cid]);
+    $pdo->prepare('DELETE FROM colleges WHERE college_id = ?')->execute([$cid]);
+    record_transaction($pdo, 'Delete', 'college', 'Deleted college ' . $label . '.');
+  }
 }
 
 function sync_org(PDO $pdo, array $doc): void
@@ -500,6 +882,21 @@ function sync_org(PDO $pdo, array $doc): void
     }
   }
 
+  foreach (is_array($doc['archivedPrograms'] ?? null) ? $doc['archivedPrograms'] : [] as $program) {
+    if (!is_array($program)) {
+      continue;
+    }
+    $pid = parse_id((string) ($program['id'] ?? ''), 'd');
+    if (!$pid) {
+      continue;
+    }
+    $pdo->prepare('UPDATE programs SET is_active = 0, archived_label = ? WHERE program_id = ?')
+      ->execute([(string) ($program['archivedLabel'] ?? ''), $pid]);
+    $seenPrograms[$pid] = true;
+  }
+
+  org_keep_direct_program_when_departments_start($pdo, $seenPrograms, $seenDepartments);
+
   foreach ($pdo->query('SELECT college_id FROM colleges')->fetchAll() as $row) {
     $cid = (int) $row['college_id'];
     if (!isset($seenColleges[$cid])) {
@@ -551,10 +948,11 @@ function upsert_department_with_programs(PDO $pdo, int $collegeId, array $d, arr
     $deptId = insert_department($pdo, $collegeId, $name, $collegeCode);
   }
 
+  $programsProvided = array_key_exists('programs', $d);
   $programs = is_array($d['programs'] ?? null) ? $d['programs'] : [];
-  if (!$programs) {
+  if (!$programsProvided) {
     $existingPrograms = $pdo->prepare(
-      'SELECT program_id, program_name FROM programs WHERE department_id = ? ORDER BY program_name'
+      'SELECT program_id, program_name FROM programs WHERE department_id = ? AND is_active = 1 ORDER BY program_name'
     );
     $existingPrograms->execute([$deptId]);
     foreach ($existingPrograms->fetchAll() as $existingProgram) {
@@ -564,7 +962,7 @@ function upsert_department_with_programs(PDO $pdo, int $collegeId, array $d, arr
       ];
     }
   }
-  if (!$programs) {
+  if (!$programs && !$programsProvided) {
     $programs = [['id' => '', 'name' => $name]];
   }
   $ids = [];
@@ -602,7 +1000,7 @@ function upsert_department_with_programs(PDO $pdo, int $collegeId, array $d, arr
     $created = insert_program($pdo, $collegeId, $deptId, $pname, $collegeCode);
     $ids[] = (int) parse_id($created['id'], 'd');
   }
-  if (!$ids) {
+  if (!$ids && !$programsProvided) {
     $created = insert_program($pdo, $collegeId, $deptId, $name, $collegeCode);
     $ids[] = (int) parse_id($created['id'], 'd');
   }
@@ -709,6 +1107,144 @@ function org_audit_state(PDO $pdo): array
     ];
   }
   return ['colleges' => $colleges, 'departments' => $departments, 'programs' => $programs];
+}
+
+/** The PUT: save the whole document, log what changed, and archive curricula of newly archived programs. */
+function org_save_document(PDO $pdo, array $doc): void
+{
+  $before = org_audit_state($pdo);
+  sync_org($pdo, $doc);
+  $after = org_audit_state($pdo);
+  foreach (org_audit_changes($before, $after) as $change) {
+    record_transaction($pdo, $change['action'], $change['area'], $change['summary']);
+  }
+  org_archive_curricula_of_archived_programs($pdo, $before, $after);
+  org_restore_children_of_restored_colleges($pdo, $before, $after);
+  org_restore_programs_of_restored_departments($pdo, $before, $after);
+}
+
+/**
+ * Restoring a department brings back all of its programs too, including ones archived
+ * on their own earlier; archive again whatever should stay unused. Curricula are not
+ * restored. A department restored together with its college is handled there.
+ */
+function org_restore_programs_of_restored_departments(PDO $pdo, array $before, array $after): void
+{
+  $restore = $pdo->prepare('UPDATE programs SET is_active = 1, archived_label = NULL WHERE department_id = ? AND is_active = 0');
+  foreach ($after['departments'] as $id => $dept) {
+    $was = $before['departments'][$id] ?? null;
+    if (!$was || $was['active'] || !$dept['active']) {
+      continue;
+    }
+    $restore->execute([(int) $id]);
+    $n = $restore->rowCount();
+    if ($n > 0) {
+      record_transaction(
+        $pdo,
+        'Unarchive',
+        'department',
+        'Restored ' . $n . ($n === 1 ? ' program' : ' programs') . ' under ' . org_department_name($after, (int) $id) . ' along with the department.'
+      );
+    }
+  }
+}
+
+/**
+ * Restoring a college brings back everything under it: all its departments and their
+ * programs (or, for a college without departments, its own program), including ones that
+ * were archived on their own earlier. The Records Officer or Registrar then archives
+ * whatever should stay unused. Curricula are not restored (each is restored on its own).
+ * Only the change itself triggers this, so later saves never undo an archive.
+ */
+function org_restore_children_of_restored_colleges(PDO $pdo, array $before, array $after): void
+{
+  foreach ($after['colleges'] as $id => $college) {
+    $was = $before['colleges'][$id] ?? null;
+    if (!$was || $was['active'] || !$college['active']) {
+      continue;
+    }
+    $id = (int) $id;
+    $departments = 0;
+    $programs = 0;
+    if ($college['useDepartments']) {
+      $stmt = $pdo->prepare('UPDATE departments SET is_active = 1, archived_label = NULL WHERE college_id = ? AND is_active = 0');
+      $stmt->execute([$id]);
+      $departments = $stmt->rowCount();
+      $stmt = $pdo->prepare(
+        'UPDATE programs SET is_active = 1, archived_label = NULL
+         WHERE is_active = 0 AND department_id IN (SELECT department_id FROM departments WHERE college_id = ?)'
+      );
+      $stmt->execute([$id]);
+      $programs = $stmt->rowCount();
+    } else {
+      // one program stands for the whole college
+      $active = $pdo->prepare('SELECT COUNT(*) FROM programs WHERE college_id = ? AND is_active = 1');
+      $active->execute([$id]);
+      if ((int) $active->fetchColumn() === 0) {
+        $pick = $pdo->prepare(
+          'SELECT program_id FROM programs
+           WHERE college_id = ? AND is_active = 0 AND (represents_college = 1 OR department_id IS NULL)
+           ORDER BY represents_college DESC, program_id
+           LIMIT 1'
+        );
+        $pick->execute([$id]);
+        $pid = (int) $pick->fetchColumn();
+        if ($pid > 0) {
+          $pdo->prepare('UPDATE programs SET is_active = 1, archived_label = NULL WHERE program_id = ?')->execute([$pid]);
+          $programs = 1;
+        }
+      }
+    }
+    if ($departments > 0 || $programs > 0) {
+      $parts = [];
+      if ($departments > 0) {
+        $parts[] = $departments . ($departments === 1 ? ' department' : ' departments');
+      }
+      if ($programs > 0) {
+        $parts[] = $programs . ($programs === 1 ? ' program' : ' programs');
+      }
+      record_transaction(
+        $pdo,
+        'Unarchive',
+        'college',
+        'Restored ' . implode(' and ', $parts) . ' under ' . org_college_name($after, $id) . ' along with the college.'
+      );
+    }
+  }
+}
+
+/**
+ * A program that goes from active to archived (on its own, or because its department
+ * or college was archived) takes its active curricula with it. Restoring the program
+ * does not restore them: the Registrar or Records Officer unarchives each curriculum.
+ * Only the change itself triggers this, so a curriculum restored later stays restored.
+ */
+function org_archive_curricula_of_archived_programs(PDO $pdo, array $before, array $after): void
+{
+  if (!schema_table_exists($pdo, 'curricula')) {
+    return;
+  }
+  $archive = $pdo->prepare(
+    "UPDATE curricula SET status = 'archived', updated_at = CURRENT_TIMESTAMP
+     WHERE program_id = ? AND status = 'active'"
+  );
+  foreach ($after['programs'] as $id => $program) {
+    $was = $before['programs'][$id] ?? null;
+    if (!$was || !$was['active'] || $program['active']) {
+      continue;
+    }
+    $archive->execute([(int) $id]);
+    $n = $archive->rowCount();
+    if ($n > 0) {
+      $name = trim((string) $program['name']) !== '' ? (string) $program['name'] : 'a program';
+      record_transaction(
+        $pdo,
+        'Archive',
+        'curriculum',
+        'Archived ' . $n . ($n === 1 ? ' curriculum' : ' curricula') . ' of ' . $name . ' because the program was archived.'
+      );
+    }
+  }
 }
 
 function org_college_name(array $state, int $collegeId): string

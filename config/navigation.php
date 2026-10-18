@@ -16,7 +16,7 @@ $staff = [
     'Scheduling' => [
         ['label' => 'Create schedule', 'page' => 'create-schedule', 'icon' => 'calendar', 'match' => ['create-schedule']],
         ['label' => 'Rooms available', 'page' => 'rooms-available', 'icon' => 'door', 'match' => ['rooms-available', 'rooms-available-filters', 'data-management/rooms-available-filters']],
-        ['label' => 'Reports', 'page' => 'final-report', 'icon' => 'report', 'match' => ['final-report', 'report-schedules', 'report-schedule-room']],
+        ['label' => 'Reports', 'page' => 'final-report', 'icon' => 'report', 'match' => ['final-report', 'finished-curriculums', 'past-terms', 'report-schedules', 'report-schedule-room']],
     ],
     'Academic data' => [
         ['label' => 'Data management', 'page' => 'data-management/college-departments', 'icon' => 'building', 'match' => ['data-management', 'data-management/*']],
@@ -29,33 +29,31 @@ $staff = [
     ],
 ];
 
-$viewer = [
+// Deans and Program Chairs: this term's approved timetable on the Dashboard, earlier terms in
+// Past timetables, the curriculums they make, and schedule-change requests.
+$maker = [
     'Overview' => [
         ['label' => 'Dashboard', 'page' => 'dashboard', 'icon' => 'dashboard', 'match' => ['dashboard']],
     ],
     'Schedules' => [
-        ['label' => 'Reports', 'page' => 'final-report', 'icon' => 'report', 'match' => ['final-report', 'department-report']],
+        ['label' => 'Curriculum', 'page' => 'curriculum-builder', 'icon' => 'book', 'match' => ['curriculum-builder']],
+        ['label' => 'Past timetables', 'page' => 'past-timetables', 'icon' => 'history', 'match' => ['past-timetables']],
     ],
     'Requests' => [
         ['label' => 'Requests', 'page' => 'viewer-requests', 'icon' => 'inbox', 'match' => ['viewer-requests']],
     ],
 ];
 
-// VPAA: also has the room schedule viewer, and approves instead of requesting.
-$vpaa = $viewer;
-
-// Deans and Program Chairs make the curriculums (curriculum-builder).
-$maker = $viewer;
-$maker['Schedules'] = array_merge(
-    [['label' => 'Curriculum', 'page' => 'curriculum-builder', 'icon' => 'book', 'match' => ['curriculum-builder']]],
-    $viewer['Schedules'],
-);
-$vpaa['Schedules'] = array_merge(
-    [['label' => 'Room schedule', 'page' => 'viewer', 'icon' => 'door', 'match' => ['viewer', 'viewer-rooms']]],
-    $viewer['Schedules'],
-);
-$vpaa['Requests'] = [
-    ['label' => 'Approval', 'page' => 'viewer-requests', 'icon' => 'inbox', 'match' => ['viewer-requests']],
+// VPAA: approves per college on the Dashboard; Approved schedules (retract) and History.
+// (Room schedule, Reports and the Approval records page were removed 2026-10-14.)
+$vpaa = [
+    'Overview' => [
+        ['label' => 'Dashboard', 'page' => 'dashboard', 'icon' => 'dashboard', 'match' => ['dashboard']],
+    ],
+    'Schedules' => [
+        ['label' => 'Approved schedules', 'page' => 'approved-schedules', 'icon' => 'check', 'match' => ['approved-schedules']],
+        ['label' => 'History', 'page' => 'history', 'icon' => 'history', 'match' => ['history']],
+    ],
 ];
 
 return [

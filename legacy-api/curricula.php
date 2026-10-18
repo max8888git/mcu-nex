@@ -10,6 +10,17 @@ ensure_curriculum_hours_writable($pdo);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($method === 'GET') {
+  // Reports → Finished curriculums (curriculum-archive.php)
+  if (!empty($_GET['finished']) || !empty($_GET['finished_id'])) {
+    try {
+      json_ok(!empty($_GET['finished_id'])
+        ? curriculum_finished_detail($pdo, (int) parse_id((string) $_GET['finished_id'], 'cur'))
+        : curriculum_finished_overview($pdo));
+    } catch (Throwable $e) {
+      registrar_reraise($e);
+      json_error($e->getMessage(), 400);
+    }
+  }
   $id = parse_id((string) ($_GET['id'] ?? ''), 'cur');
   if ($id) {
     $row = curriculum_by_id($pdo, $id);
@@ -73,6 +84,7 @@ if ($method === 'PATCH') {
     $pdo->beginTransaction();
     $hasCourses = array_key_exists('courses', $body);
     if (!$hasCourses && isset($body['status'])) {
+      curriculum_archive_role($pdo);
       $status = (string) $body['status'] === 'archived' ? 'archived' : 'active';
       $pdo->prepare('UPDATE curricula SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE curriculum_id = ?')
         ->execute([$status, $id]);
@@ -106,49 +118,25 @@ if ($method === 'PATCH') {
   }
 }
 
+// curriculums are records: archived first (Reports → Finished curriculums). The University Registrar can delete
+// an archived one that was never used (a wrong upload, a duplicate); see curriculum_delete in curriculum-archive.php
 if ($method === 'DELETE') {
   $id = parse_id((string) ($_GET['id'] ?? ''), 'cur');
   if (!$id) {
     json_error('Curriculum id is required');
   }
-  $existingCurriculum = curriculum_by_id($pdo, $id);
-  $exists = $pdo->prepare('SELECT curriculum_id, status FROM curricula WHERE curriculum_id = ?');
-  $exists->execute([$id]);
-  $row = $exists->fetch();
-  if (!$row || !$existingCurriculum) {
-    json_error('Curriculum not found', 404);
-  }
-  if ((string) ($row['status'] ?? '') !== 'archived') {
-    json_error('Archive this curriculum before deleting it.', 400);
-  }
-  if (schema_table_exists($pdo, 'sections')) {
-    $used = $pdo->prepare('SELECT COUNT(*) FROM sections WHERE curriculum_id = ?');
-    $used->execute([$id]);
-    if ((int) $used->fetchColumn() > 0) {
-      json_error('This curriculum is still used by sections. Delete those sections first.', 400);
-    }
-  }
   try {
     $pdo->beginTransaction();
-    if (schema_table_exists($pdo, 'curriculum_courses')) {
-      $pdo->prepare('DELETE FROM curriculum_courses WHERE curriculum_id = ?')->execute([$id]);
-    }
-    $pdo->prepare('DELETE FROM curricula WHERE curriculum_id = ?')->execute([$id]);
-    record_transaction(
-      $pdo,
-      'Delete',
-      'curriculum',
-      'Deleted archived curriculum ' . $existingCurriculum['name'] . '.'
-    );
+    $deleted = curriculum_delete($pdo, $id);
     $pdo->commit();
+    json_ok(['deleted' => $deleted]);
   } catch (Throwable $e) {
     registrar_reraise($e);
     if ($pdo->inTransaction()) {
       $pdo->rollBack();
     }
-    json_error('Could not delete this curriculum because other records still use it.', 400);
+    json_error($e->getMessage(), 400);
   }
-  json_ok(['removed' => true]);
 }
 
 json_error('Unsupported method', 405);

@@ -79,7 +79,7 @@
             ? '<label class="cs-pick"><input type="checkbox" data-pick="' + esc(v.id) + '"' + (sel ? ' checked' : '') + ' aria-label="Select ' + esc(v.programName) + '"><span class="cs-name">' + esc(v.programName) + '</span></label>'
             : '<span class="cs-pick"><span class="cs-name">' + esc(v.programName) + '</span></span>') +
           '<span class="cs-status">' + chip(v.status) + '<span class="cs-when">' + esc(v.collegeName) + '</span></span>' +
-          '<span class="cs-work"><span class="cs-progress">Version ' + v.version + ' · ' + esc(v.academicYear) + ' · ' + v.courseCount + ' subjects, ' + v.totalUnits + ' units</span>' +
+          '<span class="cs-work"><span class="cs-progress">“' + esc(v.name) + '” · Version ' + v.version + ' · ' + esc(v.academicYear) + ' · ' + v.courseCount + ' subjects, ' + v.totalUnits + ' units</span>' +
           '<span class="cs-when">' + (v.status === 'pending_registrar' ? 'Sent ' + esc(when(v.sentRegistrarAt)) + (v.deanBy ? ' by ' + esc(v.deanBy) : '')
             : v.status === 'accepted' ? 'Accepted ' + esc(when(v.registrarAt)) + (v.registrarBy ? ' by ' + esc(v.registrarBy) : '')
             : 'Updated ' + esc(when(v.updatedAt))) + '</span>' +
@@ -119,7 +119,7 @@
     if (r.status === 'accepted' && r.registrarBy) trail.push('accepted by ' + esc(r.registrarBy) + ' on ' + esc(when(r.registrarAt)));
     root.innerHTML =
       '<button type="button" class="cb-back" data-back>&larr; All curriculums</button>' +
-      '<div class="cb-head"><div><h2>' + esc(r.programName) + '</h2><p>' + esc(r.collegeName) + ' · Version ' + r.version + ' · Effective ' + esc(r.academicYear) + '</p>' +
+      '<div class="cb-head"><div><h2>' + esc(r.programName) + '</h2><p class="cb-draftname"><strong>' + esc(r.name) + '</strong></p><p>' + esc(r.collegeName) + ' · Version ' + r.version + ' · Effective ' + esc(r.academicYear) + '</p>' +
       (trail.length ? '<p class="cb-muted">' + trail.join(', ') + '.</p>' : '') + '</div><div class="cb-head-side">' + chip(r.status) + '</div></div>' +
       (r.notes ? '<p class="cb-notes-view"><strong>Notes from the college:</strong> ' + esc(r.notes) + '</p>' : '') +
       '<div class="cb-toolbar"><span class="cb-muted">Check it for mistakes before accepting. Problems the system finds are listed below.</span><span class="cb-spacer"></span>' +
@@ -144,7 +144,7 @@
       title: 'Compare ' + r.programName + ' versions',
       nowLabel: 'version ' + r.version,
       courses: r.courses || [],
-      choices: others.map(function (h) { return { id: h.id, label: 'Version ' + h.version + ' · ' + h.academicYear + ' · ' + F.statusText(h.status), short: 'version ' + h.version }; }),
+      choices: others.map(function (h) { return { id: h.id, label: h.name + ' · version ' + h.version + ' · ' + F.statusText(h.status), short: '“' + h.name + '”' }; }),
       pick: (active || others[0]).id,
       load: function (id) {
         return global.McuApi.get(API + '?id=' + encodeURIComponent(id)).then(function (res) { return res.review.courses || []; });
@@ -228,7 +228,7 @@
       return ask({
         title: 'Accept ' + picked.length + (picked.length === 1 ? ' curriculum?' : ' curriculums?'),
         message: 'Each becomes the active curriculum for its program and is used for sectioning. The colleges are told.',
-        list: picked.map(function (v) { return v.programName + ' · ' + v.academicYear + ' (version ' + v.version + ')'; }),
+        list: picked.map(function (v) { return v.programName + ' · ' + v.name + ' · ' + v.academicYear + ' (version ' + v.version + ')'; }),
         yes: 'Accept',
         go: function () {
           return decide(picked.map(function (v) { return v.id; }), true).then(function () { notice('Accepted ' + picked.length + '.'); });

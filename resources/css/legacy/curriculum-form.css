@@ -197,6 +197,8 @@
 .cl-pending span { font-weight: 700; }
 .cl-pending:hover { background: #fef3c7; }
 .cl-note { margin: 0 0 0.75rem; padding: 0.5rem 0.75rem; border-radius: 0.55rem; background: #f6f2fa; color: #4b3d5e; font-size: 0.85rem; }
+.cl-note a { color: var(--ui-purple, #5c267e); font-weight: 600; }
+.cl-note--soft { background: #fafafa; color: var(--ui-muted, #7a6992); }
 .cl-md .sched-md-detail .cb-head h2 { font-size: 1.2rem; }
 .cl-md .cb-toolbar { position: static; }
 
@@ -288,3 +290,25 @@
 .cf-copy-term { padding: 0.5rem 0.7rem; border: 1px solid var(--ui-line); border-radius: 0.6rem; }
 .cf-copy-term legend { padding: 0 0.3rem; font-size: 0.86rem; }
 .cf-copy-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; padding: 0.2rem 0; font-size: 0.85rem; cursor: pointer; }
+
+/* several named drafts per program */
+.cb-way { display: flex; flex-direction: column; gap: 0.4rem; }
+.cb-drafts { display: flex; flex-direction: column; gap: 0.4rem; }
+.cb-drafts ul { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+.cb-draft { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.6rem 0.7rem; border: 1px solid var(--ui-line); border-radius: 0.65rem; background: #fcfaff; }
+.cb-draft-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.cb-draft-name { color: var(--ui-purple-dark); font-size: 0.95rem; }
+.cb-draft-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.15rem; }
+.cb-draft-actions .ui-btn { min-height: 34px; padding: 0.3rem 0.8rem; font-size: 0.84rem; }
+.cb-draftname { margin-top: 0.1rem; font-size: 0.95rem; color: var(--ui-purple); }
+
+/* several named drafts per program */
+.cb-way { display: flex; flex-direction: column; gap: 0.4rem; }
+.cb-drafts { display: flex; flex-direction: column; gap: 0.4rem; }
+.cb-drafts ul { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+.cb-draft { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.6rem 0.7rem; border: 1px solid var(--ui-line); border-radius: 0.65rem; background: #fcfaff; }
+.cb-draft-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.cb-draft-name { color: var(--ui-purple-dark); font-size: 0.95rem; }
+.cb-draft-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.15rem; }
+.cb-draft-actions .ui-btn { min-height: 34px; padding: 0.3rem 0.8rem; font-size: 0.84rem; }
+.cb-draftname { margin-top: 0.1rem; font-size: 0.95rem; color: var(--ui-purple); }
